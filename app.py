@@ -1,4 +1,5 @@
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session
+from werkzeug.security import generate_password_hash, check_password_hash
 import asyncio
 from ollama import AsyncClient, Client
 import os
@@ -10,11 +11,17 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 import mysql.connector
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+import jwt
+from functools import wraps
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'md', 'epub'}
+
+# 添加配置
+app.config['SECRET_KEY'] = '3e8f44d5b59f969e020f82c088bf0c56bdccc1a13db66ac013edbb24dce572a7'  # 用于 JWT
+app.config['JWT_EXPIRATION_DELTA'] = timedelta(days=1)
 
 # 数据库配置
 db_config = {
@@ -101,10 +108,48 @@ def ollama_text(input_text, model='qwen2.5:3b'):
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token:
+            return jsonify({'error': '未登录'}), 401
+            
+        try:
+            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+            request.user = payload
+            return f(*args, **kwargs)
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'token已过期'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'error': '无效的token'}), 401
+            
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token:
+            return jsonify({'error': '未登录'}), 401
+            
+        try:
+            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+            if payload['role'] != 'admin':
+                return jsonify({'error': '需要管理员权限'}), 403
+            request.user = payload
+            return f(*args, **kwargs)
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'token已过期'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'error': '无效的token'}), 401
+            
+    return decorated_function
+
 # 路由
 @app.route('/')
-def index():
-    return render_template('index.html')
+def dashboard():
+    return render_template('dashboard.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -343,5 +388,242 @@ def handle_error(error):
     print(f"发生错误: {str(error)}")
     return jsonify({'error': str(error)}), 500
 
+# 用户注册
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.json
+    
+    # 不允许注册管理员账户
+    if data.get('username') == 'admin':
+        return jsonify({'error': '不允许使用此用户名'}), 400
+        
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        # 检查用户名是否已存在
+        cursor.execute("SELECT id FROM users WHERE username = %s", (data['username'],))
+        if cursor.fetchone():
+            return jsonify({'error': '用户名已存在'}), 400
+            
+        # 检查邮箱是否已存在
+        cursor.execute("SELECT id FROM users WHERE email = %s", (data['email'],))
+        if cursor.fetchone():
+            return jsonify({'error': '邮箱已被注册'}), 400
+            
+        # 创建新用户，强制设置为普通用户
+        user_id = str(uuid.uuid4())
+        hashed_password = generate_password_hash(data['password'])
+        cursor.execute(
+            """INSERT INTO users (id, username, password, email, role)
+               VALUES (%s, %s, %s, %s, 'user')""",
+            (user_id, data['username'], hashed_password, data['email'])
+        )
+        conn.commit()
+        
+        return jsonify({
+            'message': '注册成功',
+            'user': {
+                'id': user_id,
+                'username': data['username'],
+                'email': data['email'],
+                'role': 'user'
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# 用户登录
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    print(f"登录请求数据: {data}")  # 添加调试日志
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute(
+            "SELECT * FROM users WHERE username = %s",
+            (data['username'],)
+        )
+        user = cursor.fetchone()
+        print(f"查询到的用户: {user}")  # 添加调试日志
+        
+        if not user or not check_password_hash(user['password'], data['password']):
+            return jsonify({'error': '用户名或密码错误'}), 401
+            
+        # 生成 JWT token，添加算法参数
+        token = jwt.encode({
+            'user_id': user['id'],
+            'username': user['username'],
+            'role': user['role'],
+            'exp': datetime.utcnow() + timedelta(days=1)
+        }, app.config['SECRET_KEY'], algorithm='HS256')  # 指定算法
+        
+        print(f"生成的token: {token}")  # 添加调试日志
+        
+        return jsonify({
+            'token': token,
+            'user': {
+                'id': user['id'],
+                'username': user['username'],
+                'email': user['email'],
+                'role': user['role']
+            }
+        })
+    except Exception as e:
+        print(f"登录错误: {str(e)}")  # 添加调试日志
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# 用户注销
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    # 前端需要清除 token
+    return jsonify({'message': '注销成功'})
+
+# 获取用户信息
+@app.route('/api/user/profile')
+def get_user_profile():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'error': '未登录'}), 401
+        
+    try:
+        # 验证 token，添加算法参数
+        payload = jwt.decode(
+            token.split(' ')[1], 
+            app.config['SECRET_KEY'], 
+            algorithms=['HS256']  # 指定算法
+        )
+        user_id = payload['user_id']
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute(
+            "SELECT id, username, email, role FROM users WHERE id = %s",
+            (user_id,)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': '用户不存在'}), 404
+            
+        return jsonify(user)
+    except jwt.ExpiredSignatureError:
+        return jsonify({'error': 'token已过期'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'error': '无效的token'}), 401
+    except Exception as e:
+        print(f"获取用户信息错误: {str(e)}")  # 添加调试日志
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# 收藏消息
+@app.route('/api/favorites/add', methods=['POST'])
+def add_favorite():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'error': '未登录'}), 401
+        
+    try:
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+        user_id = payload['user_id']
+        
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        favorite_id = str(uuid.uuid4())
+        cursor.execute(
+            """INSERT INTO favorites (id, user_id, message_id)
+               VALUES (%s, %s, %s)""",
+            (favorite_id, user_id, data['message_id'])
+        )
+        conn.commit()
+        
+        return jsonify({'message': '收藏成功'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# 获取收藏列表
+@app.route('/api/favorites')
+def get_favorites():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'error': '未登录'}), 401
+        
+    try:
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+        user_id = payload['user_id']
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute(
+            """SELECT f.*, m.content, m.created_at as message_date
+               FROM favorites f
+               JOIN messages m ON f.message_id = m.id
+               WHERE f.user_id = %s
+               ORDER BY f.created_at DESC""",
+            (user_id,)
+        )
+        favorites = cursor.fetchall()
+        
+        return jsonify(favorites)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/login')
+def login_page():
+    return render_template('login.html')
+
+@app.route('/register')
+def register_page():
+    return render_template('register.html')
+
+# 在 app.py 中添加初始化管理员账户的函数
+def init_admin():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        # 检查管理员是否已存在
+        cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+        admin = cursor.fetchone()
+        
+        if not admin:
+            # 创建管理员账户
+            admin_id = str(uuid.uuid4())
+            hashed_password = generate_password_hash('admin')
+            cursor.execute(
+                """INSERT INTO users (id, username, password, email, role)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (admin_id, 'admin', hashed_password, 'admin@example.com', 'admin')
+            )
+            conn.commit()
+            print("管理员账户创建成功")
+    except Exception as e:
+        print(f"初始化管理员账户错误: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+# 在应用启动时初始化管理员账户
 if __name__ == '__main__':
+    init_admin()  # 添加这行
     app.run(debug=True, port=5000) 

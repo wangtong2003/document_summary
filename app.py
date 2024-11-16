@@ -92,7 +92,7 @@ def read_document(file_path):
     else:
         raise ValueError("不支持的文件格式")
 
-def ollama_text(input_text, model='qwen2.5:3b'):
+def ollama_text(input_text, model='qwen:7b'):
     try:
         client = Client(host='http://localhost:11434')
         response = client.chat(model=model, messages=[
@@ -116,7 +116,7 @@ def login_required(f):
             return jsonify({'error': '未登录'}), 401
             
         try:
-            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
             request.user = payload
             return f(*args, **kwargs)
         except jwt.ExpiredSignatureError:
@@ -134,7 +134,7 @@ def admin_required(f):
             return jsonify({'error': '未登录'}), 401
             
         try:
-            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
             if payload['role'] != 'admin':
                 return jsonify({'error': '需要管理员权限'}), 403
             request.user = payload
@@ -188,7 +188,7 @@ def upload_file():
                 # 使用同步客户端
                 client = Client(host='http://localhost:11434')
                 response = client.chat(
-                    model='qwen2.5:3b',
+                    model='qwen:7b',
                     messages=[{
                         'role': 'user',
                         'content': ollama_text(document_content)
@@ -455,13 +455,13 @@ def login():
         if not user or not check_password_hash(user['password'], data['password']):
             return jsonify({'error': '用户名或密码错误'}), 401
             
-        # 生成 JWT token，添加算法参数
+        # 生成 JWT token
         token = jwt.encode({
             'user_id': user['id'],
             'username': user['username'],
             'role': user['role'],
             'exp': datetime.utcnow() + timedelta(days=1)
-        }, app.config['SECRET_KEY'], algorithm='HS256')  # 指定算法
+        }, app.config['SECRET_KEY'], algorithm='HS256')
         
         print(f"生成的token: {token}")  # 添加调试日志
         
@@ -495,12 +495,8 @@ def get_user_profile():
         return jsonify({'error': '未登录'}), 401
         
     try:
-        # 验证 token，添加算法参数
-        payload = jwt.decode(
-            token.split(' ')[1], 
-            app.config['SECRET_KEY'], 
-            algorithms=['HS256']  # 指定算法
-        )
+        # 验证 token
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
         user_id = payload['user_id']
         
         conn = get_db_connection()
@@ -535,7 +531,7 @@ def add_favorite():
         return jsonify({'error': '未登录'}), 401
         
     try:
-        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
         user_id = payload['user_id']
         
         data = request.json
@@ -565,7 +561,7 @@ def get_favorites():
         return jsonify({'error': '未登录'}), 401
         
     try:
-        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
         user_id = payload['user_id']
         
         conn = get_db_connection()
@@ -596,7 +592,115 @@ def login_page():
 def register_page():
     return render_template('register.html')
 
-# 在 app.py 中添加初始化管理员账户的函数
+# 获取当前用户信息
+@app.route('/api/user')
+def get_current_user():
+    token = request.headers.get('Authorization')
+    if not token:
+        return jsonify({'error': '未登录'}), 401
+        
+    try:
+        # 从 Bearer token 中提取 JWT
+        token = token.split(' ')[1]
+        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute(
+            """SELECT id, username, email, role, created_at, updated_at 
+               FROM users 
+               WHERE id = %s""",
+            (payload['user_id'],)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': '用户不存在'}), 404
+            
+        return jsonify(user)
+    except jwt.ExpiredSignatureError:
+        return jsonify({'error': 'token已过期'}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({'error': '无效的token'}), 401
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+        
+# 更新用户角色（仅管理员可访问）
+@app.route('/api/users/<user_id>/role', methods=['PUT'])
+@admin_required
+def update_user_role(user_id):
+    data = request.json
+    new_role = data.get('role')
+    
+    if new_role not in ['user', 'admin']:
+        return jsonify({'error': '无效的角色'}), 400
+        
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        # 检查用户是否存在
+        cursor.execute("SELECT username FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': '用户不存在'}), 404
+            
+        # 更新用户角色
+        cursor.execute(
+            "UPDATE users SET role = %s WHERE id = %s",
+            (new_role, user_id)
+        )
+        conn.commit()
+        
+        return jsonify({'message': '用户角色更新成功'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# 管理员用户管理页面
+@app.route('/admin/users')
+@admin_required
+def admin_users():
+    return render_template('admin/users.html')
+# 获取所有用户列表（仅管理员可访问）
+@app.route('/api/users')
+@admin_required
+def get_users():
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
+    try:
+        cursor.execute(
+            """SELECT id, username, email, role, created_at, updated_at 
+               FROM users 
+               ORDER BY created_at DESC"""
+        )
+        users = cursor.fetchall()
+        
+        # 转换datetime对象为字符串
+        for user in users:
+            if user['created_at']:
+                user['created_at'] = user['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            if user['updated_at']:
+                user['updated_at'] = user['updated_at'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        return jsonify(users)
+    except Exception as e:
+        print(f"获取用户列表错误: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# 初始化管理员账户的函数
 def init_admin():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -626,4 +730,5 @@ def init_admin():
 # 在应用启动时初始化管理员账户
 if __name__ == '__main__':
     init_admin()  # 添加这行
-    app.run(debug=True, port=5000) 
+    app.run(debug=True, port=5000)
+

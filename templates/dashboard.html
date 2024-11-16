@@ -217,22 +217,16 @@
     <!-- 导航栏 -->
     <nav class="navbar navbar-expand-lg fixed-top">
         <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="bi bi-file-earmark-text me-2"></i>
-                文档摘要生成器
-            </a>
-            <div class="ms-auto">
-                <div class="dropdown">
-                    <button class="btn btn-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
-                        <i class="bi bi-person-circle me-2"></i>
-                        <span id="username"></span>
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end">
-                        <li><a class="dropdown-item" href="#" id="logoutBtn">
-                            <i class="bi bi-box-arrow-right me-2"></i>注销
-                        </a></li>
-                    </ul>
-                </div>
+            <a class="navbar-brand" href="#">文档摘要生成器</a>
+            <div class="d-flex align-items-center">
+                <div class="me-3" id="userInfo"></div>
+                <!-- 添加管理员菜单 -->
+                <a href="#" class="btn btn-outline-primary me-2" id="adminMenu" style="display: none;" onclick="goToAdminPage()">
+                    <i class="bi bi-people"></i> 用户管理
+                </a>
+                <button class="btn btn-outline-danger" id="logoutBtn">
+                    <i class="bi bi-box-arrow-right"></i> 退出
+                </button>
             </div>
         </div>
     </nav>
@@ -300,34 +294,64 @@
 
         // 检查登录状态
         async function checkAuth() {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                window.location.href = '/login';
-                return;
+    try {
+        const response = await fetch('/api/user', {
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
             }
-
-            try {
-                const response = await fetch('/api/user/profile', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (!response.ok) {
-                    throw new Error('验证失败');
-                }
-
-                const user = await response.json();
-                currentUser = user;
-                document.getElementById('username').textContent = user.username;
-                return user;
-            } catch (error) {
-                console.error('验证错误:', error);
-                localStorage.removeItem('token');
-                localStorage.removeItem('user');
-                window.location.href = '/login';
-            }
+        });
+        
+        if (!response.ok) throw new Error('未授权');
+        
+        const userData = await response.json();
+        document.getElementById('userInfo').textContent = `${userData.username}`;
+        
+        // 检查是否为管理员
+        if (userData.role === 'admin') {
+            document.getElementById('adminMenu').style.display = 'inline-block';
         }
+        
+    } catch (error) {
+        console.error('验证错误:', error);
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+    }
+}
+
+function goToAdminPage() {
+    const token = localStorage.getItem('token');
+    // 使用 form 提交来携带 token
+    const form = document.createElement('form');
+    form.method = 'GET';
+    form.action = '/admin/users';
+    
+    // 添加 token 到 header
+    const headers = new Headers({
+        'Authorization': `Bearer ${token}`
+    });
+    
+    // 使用 fetch 发送请求
+    fetch('/admin/users', {
+        headers: headers
+    })
+    .then(response => {
+        if (response.ok) {
+            return response.text();
+        }
+        throw new Error('访问被拒绝');
+    })
+    .then(html => {
+        // 将返回的 HTML 内容显示在新窗口或当前窗口
+        const newWindow = window.open('');
+        newWindow.document.write(html);
+    })
+    .catch(error => {
+        console.error('访问管理页面失败:', error);
+        alert('访问管理页面失败: ' + error.message);
+        });
+        }
+
 
         // 更新上传区域显示
         function updateUploadAreaWithFile(file) {
@@ -483,6 +507,38 @@
                 console.error('初始化错误:', error);
             }
         };
+        function goToAdminPage() {
+    const token = localStorage.getItem('token');
+    // 使用 form 提交来携带 token
+    const form = document.createElement('form');
+    form.method = 'GET';
+    form.action = '/admin/users';
+    
+    // 添加 token 到 header
+    const headers = new Headers({
+        'Authorization': `Bearer ${token}`
+    });
+    
+    // 使用 fetch 发送请求
+    fetch('/admin/users', {
+        headers: headers
+    })
+    .then(response => {
+        if (response.ok) {
+            return response.text();
+        }
+        throw new Error('访问被拒绝');
+    })
+    .then(html => {
+        // 将返回的 HTML 内容显示在新窗口或当前窗口
+        const newWindow = window.open('');
+        newWindow.document.write(html);
+    })
+    .catch(error => {
+        console.error('访问管理页面失败:', error);
+        alert('访问管理页面失败: ' + error.message);
+            });
+        }
     </script>
 </body>
 </html>

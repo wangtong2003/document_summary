@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 import asyncio
 from ollama import AsyncClient, Client
@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timedelta
 import jwt
 from functools import wraps
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -39,6 +40,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 # 数据库连接函数
 def get_db_connection():
     return mysql.connector.connect(**db_config)
+
 
 # 文档处理函数
 def read_pdf(file_path):
@@ -92,17 +94,60 @@ def read_document(file_path):
     else:
         raise ValueError("不支持的文件格式")
 
-def ollama_text(input_text, model='qwen:7b'):
+def ollama_text(input_text, model='qwen2.5:0.5b'):
     try:
         client = Client(host='http://localhost:11434')
+        # 构建提示模板
+        system_prompt = """You are a powerful AI assistant capable of reading text content and summarizing it. The purpose of the summary is to help users grasp the key points without reading the entire article.
+
+        [INSTRUCTIONS]
+        - Write a concise summary within 800 characters, capturing the essence of the article in one sentence;
+        - Outline the article in up to 10 points, with each point being less than 120 characters;
+        - Utilize only factual information from the original text. Refrain from fabricating content;
+        - Please use Arabic numerals for point numbering;
+        - Before finalizing, check the word count to ensure it is within the length limitation;
+        - If the text exceeds the length limitation, trim redundant parts;
+        - Do not use markdown format;
+        
+        <OUTPUT_FORMAT_1>
+        This is an example summary.
+        1.Point one.[P2]
+        2.Point two.[P2, P3]
+        ...
+        </OUTPUT_FORMAT_1>
+
+        <OUTPUT_FORMAT_2>
+        这是一个示例总结。
+        1.要点一。[P1]
+        2.要点二。[P1, P2, P3]
+        ...
+        </OUTPUT_FORMAT_2>
+        """
+        content=f"""
+        ARTICLE_TO_SUMMARY:
+        <ARTICLE>
+        {input_text}
+        </ARTICLE>
+
+
+        **Note:**
+        1.Please repeatedly check and confirm that the page numbers in the output match the page numbers in the input. 
+        2.Note that the summary should not be marked with page numbers, but each core event needs to be marked with page numbers.
+        3.Please re-check, if you do not meet the above three points, please revise it immediately
+        """
         response = client.chat(model=model, messages=[
             {
+                'role': 'system',
+                'content': system_prompt
+            },
+            {
                 'role': 'user',
-                'content': input_text
+                'content': content
             }
         ])
         return response['message']['content']
     except Exception as e:
+        print(f"Ollama服务错误详情: {str(e)}")  # 添加错误日志
         raise Exception(f"Ollama服务错误: {str(e)}")
 
 def allowed_file(filename):
@@ -146,104 +191,64 @@ def admin_required(f):
             
     return decorated_function
 
+@app.errorhandler(404)
+def not_found_error(error):
+    print(f"404错误: {error}")  # 添加日志
+    return jsonify({'error': '请求的页面不存在'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    print(f"500错误: {error}")  # 添加日志
+    return jsonify({'error': '服务器内部错误'}), 500
+
 # 路由
 @app.route('/')
 def dashboard():
-    return render_template('dashboard.html')
+    token = request.headers.get('Authorization')
+    if not token:
+        # 尝试从 localStorage 获取 token
+        return render_template('dashboard.html')
+    try:
+        if not token.startswith('Bearer '):
+            token = f'Bearer {token}'
+        jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
+        return render_template('dashboard.html')
+    except:
+        return redirect(url_for('login_page'))
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
-        return jsonify({'error': '没有文件上传'}), 400
-    
+        return jsonify({'error': '没有文件被上传'}), 400
+        
     file = request.files['file']
-    session_id = request.form.get('sessionId')  # 获取会话ID
-    
-    if file.filename == '':
-        return jsonify({'error': '未选择文件'}), 400
-    
-    if file and allowed_file(file.filename):
-        filename = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(filename)
+    if not file or not file.filename:
+        return jsonify({'error': '没有选择文件'}), 400
+        
+    if not allowed_file(file.filename):
+        return jsonify({'error': '不支持的文件格式'}), 400
 
-        def generate():
-            try:
-                # 读取文档内容
-                document_content = read_document(filename)
-                
-                # 保存用户的上传消息
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                try:
-                    cursor.execute(
-                        """INSERT INTO messages (session_id, content, is_user)
-                           VALUES (%s, %s, %s)""",
-                        (session_id, f"上传文件: {file.filename}", True)
-                    )
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-                
-                # 使用同步客户端
-                client = Client(host='http://localhost:11434')
-                response = client.chat(
-                    model='qwen:7b',
-                    messages=[{
-                        'role': 'user',
-                        'content': ollama_text(document_content)
-                    }],
-                    stream=True
-                )
-                
-                accumulated_response = ""
-                # 处理流式响应
-                for part in response:
-                    if part and 'message' in part and 'content' in part['message']:
-                        content = part['message']['content']
-                        accumulated_response += content
-                        yield content
-                
-                # 保存AI的响应消息
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                try:
-                    cursor.execute(
-                        """INSERT INTO messages (session_id, content, is_user)
-                           VALUES (%s, %s, %s)""",
-                        (session_id, accumulated_response, False)
-                    )
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-                
-            except Exception as e:
-                error_message = f"发生错误：{str(e)}"
-                yield error_message
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                try:
-                    cursor.execute(
-                        """INSERT INTO messages (session_id, content, is_user)
-                           VALUES (%s, %s, %s)""",
-                        (session_id, error_message, False)
-                    )
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-            finally:
-                # 清理临时文件
-                if os.path.exists(filename):
-                    os.remove(filename)
-
-        return Response(
-            stream_with_context(generate()),
-            content_type='text/plain; charset=utf-8'
-        )
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
     
-    return jsonify({'error': '不支持的文件格式'}), 400
+    def generate():
+        try:
+            file.save(file_path)
+            document_content = read_document(file_path)
+            summary = ollama_text(document_content)
+            for chunk in summary.split('\n'):
+                yield chunk + '\n'
+                
+        except Exception as e:
+            yield f"错误: {str(e)}\n"
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/plain'
+    )
 
 # 会话管理API
 @app.route('/api/new-session', methods=['POST'])
@@ -283,12 +288,19 @@ def get_chat_history():
             FROM sessions s
             LEFT JOIN messages m ON s.id = m.session_id
             GROUP BY s.id
-            ORDER BY last_message_time DESC NULLS LAST
+            ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC
+            LIMIT 50
         """)
         sessions = cursor.fetchall()
         
+        # 转换datetime对象为字符串
+        for session in sessions:
+            if session['last_message_time']:
+                session['last_message_time'] = session['last_message_time'].strftime('%Y-%m-%d %H:%M:%S')
+        
         return jsonify(sessions)
     except Exception as e:
+        print(f"获取聊天历史错误: {str(e)}")
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
@@ -301,7 +313,15 @@ def get_session(session_id):
     
     try:
         # 获取会话信息
-        cursor.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+        cursor.execute("""
+            SELECT s.*, 
+                   COUNT(m.id) as message_count,
+                   MAX(m.created_at) as last_message_time
+            FROM sessions s
+            LEFT JOIN messages m ON s.id = m.session_id
+            WHERE s.id = %s
+            GROUP BY s.id
+        """, (session_id,))
         session = cursor.fetchone()
         
         if not session:
@@ -314,9 +334,15 @@ def get_session(session_id):
         )
         messages = cursor.fetchall()
         
+        # 转换datetime对象为字符串
+        for message in messages:
+            if message['created_at']:
+                message['created_at'] = message['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        
         session['messages'] = messages
         return jsonify(session)
     except Exception as e:
+        print(f"获取会话详情错误: {str(e)}")
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
@@ -509,7 +535,7 @@ def get_user_profile():
         user = cursor.fetchone()
         
         if not user:
-            return jsonify({'error': '用户不存在'}), 404
+            return jsonify({'error': '用不存在'}), 404
             
         return jsonify(user)
     except jwt.ExpiredSignatureError:
@@ -546,7 +572,7 @@ def add_favorite():
         )
         conn.commit()
         
-        return jsonify({'message': '收藏成功'})
+        return jsonify({'message': '收藏成'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -594,13 +620,10 @@ def register_page():
 
 # 获取当前用户信息
 @app.route('/api/user')
+@login_required
 def get_current_user():
     token = request.headers.get('Authorization')
-    if not token:
-        return jsonify({'error': '未登录'}), 401
-        
     try:
-        # 从 Bearer token 中提取 JWT
         token = token.split(' ')[1]
         payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
         
@@ -608,7 +631,7 @@ def get_current_user():
         cursor = conn.cursor(dictionary=True)
         
         cursor.execute(
-            """SELECT id, username, email, role, created_at, updated_at 
+            """SELECT id, username, email, role, created_at 
                FROM users 
                WHERE id = %s""",
             (payload['user_id'],)
@@ -619,16 +642,14 @@ def get_current_user():
             return jsonify({'error': '用户不存在'}), 404
             
         return jsonify(user)
-    except jwt.ExpiredSignatureError:
-        return jsonify({'error': 'token已过期'}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({'error': '无效的token'}), 401
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
-        cursor.close()
-        conn.close()
-        
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
 # 更新用户角色（仅管理员可访问）
 @app.route('/api/users/<user_id>/role', methods=['PUT'])
 @admin_required
@@ -663,6 +684,10 @@ def update_user_role(user_id):
     finally:
         cursor.close()
         conn.close()
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # 返回空响应，状态码204表示无内容
 
 # 管理员用户管理页面
 @app.route('/admin/users')
@@ -727,7 +752,7 @@ def init_admin():
         cursor.close()
         conn.close()
 
-# 在应用启动时初始化管理员账户
+# 在应用启动时初化管理员账户
 if __name__ == '__main__':
     init_admin()  # 添加这行
     app.run(debug=True, port=5000)

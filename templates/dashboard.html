@@ -6,6 +6,7 @@
     <title>文档摘要生成器</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <style>
         :root {
             --primary-color: #4A90E2;
@@ -206,6 +207,36 @@
             height: 1rem;
         }
 
+        .loading-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: var(--primary-color);
+            border-radius: 50%;
+            margin: 0 2px;
+            opacity: 0.6;
+            animation: loadingDot 1.4s infinite ease-in-out;
+        }
+
+        .loading-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .loading-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes loadingDot {
+            0%, 80%, 100% { 
+                transform: scale(0.6);
+                opacity: 0.4;
+            }
+            40% { 
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
         @media (max-width: 768px) {
             .upload-container {
                 margin: 0.5rem 1rem;
@@ -220,7 +251,6 @@
             <a class="navbar-brand" href="#">文档摘要生成器</a>
             <div class="d-flex align-items-center">
                 <div class="me-3" id="userInfo"></div>
-                <!-- 添加管理员菜单 -->
                 <a href="#" class="btn btn-outline-primary me-2" id="adminMenu" style="display: none;" onclick="goToAdminPage()">
                     <i class="bi bi-people"></i> 用户管理
                 </a>
@@ -251,7 +281,7 @@
                     <!-- 消息将在这里动态添加 -->
                 </div>
                 
-                <!-- 将上传区域移到底部 -->
+                <!-- 上传区域 -->
                 <div class="input-area">
                     <div class="upload-container">
                         <div class="upload-area" id="uploadArea">
@@ -288,77 +318,67 @@
         const chatBody = document.getElementById('chatBody');
         const historyList = document.getElementById('historyList');
         const newChatBtn = document.getElementById('newChatBtn');
-        const loadingSpinner = document.querySelector('.loading-spinner');
+        const loadingSpinner = document.getElementById('loadingSpinner');
         let currentSessionId = null;
         let currentUser = null;
 
         // 检查登录状态
         async function checkAuth() {
-    try {
-        const response = await fetch('/api/user', {
-            headers: {
-                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = '/login';
+                return;
             }
-        });
-        
-        if (!response.ok) throw new Error('未授权');
-        
-        const userData = await response.json();
-        document.getElementById('userInfo').textContent = `${userData.username}`;
-        
-        // 检查是否为管理员
-        if (userData.role === 'admin') {
-            document.getElementById('adminMenu').style.display = 'inline-block';
-        }
-        
-    } catch (error) {
-        console.error('验证错误:', error);
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        window.location.href = '/login';
-    }
-}
 
-function goToAdminPage() {
-    const token = localStorage.getItem('token');
-    // 使用 form 提交来携带 token
-    const form = document.createElement('form');
-    form.method = 'GET';
-    form.action = '/admin/users';
-    
-    // 添加 token 到 header
-    const headers = new Headers({
-        'Authorization': `Bearer ${token}`
-    });
-    
-    // 使用 fetch 发送请求
-    fetch('/admin/users', {
-        headers: headers
-    })
-    .then(response => {
-        if (response.ok) {
-            return response.text();
-        }
-        throw new Error('访问被拒绝');
-    })
-    .then(html => {
-        // 将返回的 HTML 内容显示在新窗口或当前窗口
-        const newWindow = window.open('');
-        newWindow.document.write(html);
-    })
-    .catch(error => {
-        console.error('访问管理页面失败:', error);
-        alert('访问管理页面失败: ' + error.message);
-        });
+            try {
+                const response = await fetch('/api/user', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('认证失败');
+                }
+
+                const user = await response.json();
+                if (user.role === 'admin') {
+                    document.getElementById('adminMenu').style.display = 'inline';
+                }
+            } catch (error) {
+                console.error('认证错误:', error);
+                window.location.href = '/login';
+            }
         }
 
+        // 添加加载动画消息
+        function addLoadingMessage() {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message message-assistant';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content d-flex align-items-center gap-2';
+            contentDiv.style.minHeight = '24px';
+            
+            for (let i = 0; i < 3; i++) {
+                const dot = document.createElement('div');
+                dot.className = 'loading-dot';
+                contentDiv.appendChild(dot);
+            }
+            
+            messageDiv.appendChild(contentDiv);
+            chatBody.appendChild(messageDiv);
+            chatBody.scrollTop = chatBody.scrollHeight;
+            
+            return messageDiv;
+        }
 
         // 更新上传区域显示
         function updateUploadAreaWithFile(file) {
             fileInfo.textContent = `已选择文件: ${file.name}`;
             fileInfo.style.display = 'block';
             submitBtn.disabled = false;
-            uploadArea.querySelector('.upload-text').textContent = '点击更换文件';
+            uploadArea.querySelector('span').textContent = '点击更换文件';
         }
 
         // 添加消息到聊天区域
@@ -382,10 +402,33 @@ function goToAdminPage() {
             fileInput.value = '';
             fileInfo.style.display = 'none';
             submitBtn.disabled = true;
-            uploadArea.querySelector('.upload-text').textContent = '点击或拖拽文件到这里';
+            uploadArea.querySelector('span').textContent = '点击或拖拽文件到这里';
         }
 
-        // 事件监听器
+        // 处理流式响应
+        async function handleStreamResponse(response, messageContent) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedText = '';
+            
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const text = decoder.decode(value, { stream: true });
+                    accumulatedText += text;
+                    
+                    messageContent.innerHTML = marked.parse(accumulatedText);
+                    messageContent.parentElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                }
+            } catch (error) {
+                console.error('处理流式响应错误:', error);
+                throw error;
+            }
+        }
+
+        // 事件监听器设置
         uploadArea.onclick = () => fileInput.click();
 
         fileInput.onchange = () => {
@@ -417,31 +460,26 @@ function goToAdminPage() {
 
         // 提交按钮点击事件
         submitBtn.onclick = async function() {
-            if (!currentSessionId) {
-                try {
-                    const response = await fetch('/api/new-session', {
-                        method: 'POST'
-                    });
-                    const session = await response.json();
-                    currentSessionId = session.id;
-                } catch (error) {
-                    console.error('创建会话失败:', error);
-                    return;
-                }
+            if (!fileInput.files[0]) {
+                showError('请选择文件');
+                return;
             }
 
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            formData.append('sessionId', currentSessionId);
-
-            const fileName = fileInput.files[0].name;
-            addMessage(`上传文件: ${fileName}`, true);
-
-            submitBtn.disabled = true;
-            loadingSpinner.style.display = 'inline-block';
-            const loadingMsg = addMessage('正在处理...');
-
             try {
+                if (!currentSessionId) {
+                    const sessionResponse = await fetch('/api/new-session', { method: 'POST' });
+                    const session = await sessionResponse.json();
+                    currentSessionId = session.id;
+                }
+
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                formData.append('sessionId', currentSessionId);
+
+                submitBtn.disabled = true;
+                loadingSpinner.hidden = false;
+                const loadingMsg = addLoadingMessage();
+
                 const response = await fetch('/upload', {
                     method: 'POST',
                     body: formData
@@ -453,32 +491,19 @@ function goToAdminPage() {
                 }
 
                 loadingMsg.remove();
-                loadingSpinner.style.display = 'none';
-
                 const messageDiv = addMessage('', false);
                 const messageContent = messageDiv.querySelector('.message-content');
-                let accumulatedText = '';
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-
-                while (true) {
-                    const {value, done} = await reader.read();
-                    if (done) break;
-                    
-                    const text = decoder.decode(value, {stream: true});
-                    accumulatedText += text;
-                    messageContent.innerHTML = marked.parse(accumulatedText);
-                    chatBody.scrollTop = chatBody.scrollHeight;
-                }
-
-                resetUploadArea();
-                await loadChatHistory();
-            } catch (error) {
-                loadingMsg.remove();
-                loadingSpinner.style.display = 'none';
-                addMessage(`错误: ${error.message}`, false);
+                
+                await handleStreamResponse(response, messageContent);
+                
                 submitBtn.disabled = false;
+                loadingSpinner.hidden = true;
+                resetUploadArea();
+            } catch (error) {
+                console.error('上传文件错误:', error);
+                showError(error.message);
+                submitBtn.disabled = false;
+                loadingSpinner.hidden = true;
             }
         };
 
@@ -507,37 +532,69 @@ function goToAdminPage() {
                 console.error('初始化错误:', error);
             }
         };
-        function goToAdminPage() {
-    const token = localStorage.getItem('token');
-    // 使用 form 提交来携带 token
-    const form = document.createElement('form');
-    form.method = 'GET';
-    form.action = '/admin/users';
-    
-    // 添加 token 到 header
-    const headers = new Headers({
-        'Authorization': `Bearer ${token}`
-    });
-    
-    // 使用 fetch 发送请求
-    fetch('/admin/users', {
-        headers: headers
-    })
-    .then(response => {
-        if (response.ok) {
-            return response.text();
+
+        function showError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'alert alert-danger';
+            errorDiv.textContent = message;
+            chatBody.appendChild(errorDiv);
+            chatBody.scrollTop = chatBody.scrollHeight;
         }
-        throw new Error('访问被拒绝');
-    })
-    .then(html => {
-        // 将返回的 HTML 内容显示在新窗口或当前窗口
-        const newWindow = window.open('');
-        newWindow.document.write(html);
-    })
-    .catch(error => {
-        console.error('访问管理页面失败:', error);
-        alert('访问管理页面失败: ' + error.message);
-            });
+
+        // 加载聊天历史记录
+        async function loadChatHistory() {
+            try {
+                const response = await fetch('/api/chat-history');
+                if (!response.ok) {
+                    throw new Error('获取聊天历史失败');
+                }
+                
+                const sessions = await response.json();
+                historyList.innerHTML = '';
+                
+                sessions.forEach(session => {
+                    const sessionDiv = document.createElement('div');
+                    sessionDiv.className = 'history-item';
+                    if (session.id === currentSessionId) {
+                        sessionDiv.classList.add('active');
+                    }
+                    sessionDiv.textContent = session.title || '新的对话';
+                    sessionDiv.onclick = () => loadSession(session.id);
+                    historyList.appendChild(sessionDiv);
+                });
+            } catch (error) {
+                console.error('加载聊天历史错误:', error);
+                showError('加载聊天历史失败');
+            }
+        }
+
+        // 加载指定会话
+        async function loadSession(sessionId) {
+            try {
+                const response = await fetch(`/api/chat-session/${sessionId}`);
+                if (!response.ok) {
+                    throw new Error('获取会话内容失败');
+                }
+                
+                const session = await response.json();
+                currentSessionId = session.id;
+                
+                chatBody.innerHTML = '';
+                
+                session.messages.forEach(msg => {
+                    addMessage(msg.content, msg.is_user);
+                });
+                
+                document.querySelectorAll('.history-item').forEach(item => {
+                    item.classList.remove('active');
+                    if (item.dataset.sessionId === sessionId) {
+                        item.classList.add('active');
+                    }
+                });
+            } catch (error) {
+                console.error('加载会话错误:', error);
+                showError('加载会话失败');
+            }
         }
     </script>
 </body>

@@ -322,7 +322,7 @@
         let currentSessionId = null;
         let currentUser = null;
 
-        // 检查登录状态
+        // 添加认证检查中间件
         async function checkAuth() {
             const token = localStorage.getItem('token');
             if (!token) {
@@ -336,17 +336,23 @@
                         'Authorization': `Bearer ${token}`
                     }
                 });
-
+                
                 if (!response.ok) {
                     throw new Error('认证失败');
                 }
-
-                const user = await response.json();
-                if (user.role === 'admin') {
+                
+                const data = await response.json();
+                // 设置用户信息
+                document.getElementById('userInfo').textContent = data.username;
+                // 设置管理员菜单
+                if (data.role === 'admin') {
                     document.getElementById('adminMenu').style.display = 'inline';
                 }
+                
+                return data;
             } catch (error) {
                 console.error('认证错误:', error);
+                localStorage.removeItem('token');
                 window.location.href = '/login';
             }
         }
@@ -526,10 +532,16 @@
         // 页面加载完成后初始化
         window.onload = async function() {
             try {
-                await checkAuth();
-                await loadChatHistory();
+                const userData = await checkAuth();
+                if (userData) {
+                    await loadChatHistory();
+                    // 确保用户已登录后再启用文件上传功能
+                    document.getElementById('fileInput').disabled = false;
+                    document.getElementById('submitBtn').disabled = false;
+                }
             } catch (error) {
                 console.error('初始化错误:', error);
+                window.location.href = '/login';
             }
         };
 

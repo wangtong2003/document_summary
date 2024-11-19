@@ -38,26 +38,6 @@
     {% block content %}{% endblock %}
 
     <script>
-        // 检查用户角色并显示相应菜单
-        function checkUserRole() {
-            const token = localStorage.getItem('token');
-            if (token) {
-                fetch('/api/user', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                })
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('username').textContent = data.username;
-                    // 如果是管理员，显示管理员菜单
-                    if (data.role === 'admin') {
-                        document.getElementById('adminMenu').style.display = 'inline';
-                    }
-                });
-            }
-        }
-
         // 退出登录
         function logout() {
             localStorage.removeItem('token');

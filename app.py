@@ -144,8 +144,13 @@ def ollama_text(input_text, model='qwen2.5:0.5b'):
                 'role': 'user',
                 'content': content
             }
-        ])
-        return response['message']['content']
+        ],
+        stream=True
+        )
+        for chunk in response:
+            if chunk and 'message' in chunk and 'content' in chunk['message']:
+                yield f"data: {chunk['message']['content']}\n\n"
+
     except Exception as e:
         print(f"Ollama服务错误详情: {str(e)}")  # 添加错误日志
         raise Exception(f"Ollama服务错误: {str(e)}")
@@ -228,27 +233,35 @@ def upload_file():
     if not allowed_file(file.filename):
         return jsonify({'error': '不支持的文件格式'}), 400
 
-    filename = secure_filename(file.filename)
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    try:
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(file_path)
     
-    def generate():
-        try:
-            file.save(file_path)
-            document_content = read_document(file_path)
-            summary = ollama_text(document_content)
-            for chunk in summary.split('\n'):
-                yield chunk + '\n'
-                
-        except Exception as e:
-            yield f"错误: {str(e)}\n"
-        finally:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-    
-    return Response(
-        stream_with_context(generate()),
-        mimetype='text/plain'
-    )
+        def generate():
+            try:
+                document_content = read_document(file_path)
+                for chunk in ollama_text(document_content):
+                    yield chunk
+            except Exception as e:
+                yield f"data: 错误: {str(e)}\n\n"
+            finally:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no'
+            }
+        )
+        
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return jsonify({'error': str(e)}), 500
 
 # 会话管理API
 @app.route('/api/new-session', methods=['POST'])

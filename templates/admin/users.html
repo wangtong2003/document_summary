@@ -99,12 +99,17 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // 获取token
-        const token = localStorage.getItem('token');
-        if (!token) {
-            window.location.href = '/login';
-        }
-        
+        // 修改 DOMContentLoaded 事件监听器
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                // 直接加载用户列表，不做认证检查
+                await loadUsers();
+            } catch (error) {
+                console.error('加载失败:', error);
+                showMessage(error.message, true);
+            }
+        });
+
         // 显示消息
         function showMessage(message, isError = false) {
             const messageDiv = document.getElementById('message');
@@ -116,18 +121,12 @@
             }, 3000);
         }
 
-        // 加载用户列表
+        // 修改 loadUsers 函数
         async function loadUsers() {
             try {
-                const token = localStorage.getItem('token');
-                const response = await fetch('/api/users', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                
+                const response = await fetch('/api/users');
                 if (!response.ok) {
-                    throw new Error(response.status === 403 ? '需要管理员权限' : '获取用户列表失败');
+                    throw new Error('获取用户列表失败');
                 }
                 
                 const users = await response.json();
@@ -157,30 +156,27 @@
             }
         }
 
-        // 更新用户角色
+        // 修改 updateUserRole 函数
         async function updateUserRole(userId, newRole) {
             try {
                 const response = await fetch(`/api/users/${userId}/role`, {
                     method: 'PUT',
                     headers: {
-                        'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({ role: newRole })
                 });
                 
-                if (!response.ok) throw new Error('更新用户角色失败');
+                if (!response.ok) {
+                    throw new Error('更新角色失败');
+                }
                 
-                const result = await response.json();
-                showMessage(result.message);
-                loadUsers();  // 重新加载用户列表
+                showMessage('角色更新成功');
+                loadUsers();
             } catch (error) {
                 showMessage(error.message, true);
             }
         }
-
-        // 页面加载时获取用户列表
-        document.addEventListener('DOMContentLoaded', loadUsers);
     </script>
 </body>
 </html>

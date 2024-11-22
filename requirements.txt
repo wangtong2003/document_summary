@@ -10,3 +10,4 @@ PyJWT==2.8.0
 ollama==0.1.6
 ruamel-yaml>=0.17.21
 colorama>=0.4.5 
+flask-jwt-extended==4.6.0

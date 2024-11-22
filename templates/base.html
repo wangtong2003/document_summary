@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>文档摘要生成器</title>
+    <meta charset="UTF-8">
+    <link rel="icon" href="data:,">
+    <style>
+        .nav {
+            background-color: #f8f9fa;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        .nav a {
+            margin-right: 15px;
+            text-decoration: none;
+            color: #333;
+        }
+        .nav a:hover {
+            color: #007bff;
+        }
+        .user-info {
+            float: right;
+        }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="/">首页</a>
+        <a href="/dashboard">控制台</a>
+        <div class="user-info">
+            <span id="username"></span>
+            <!-- 管理员专属菜单 -->
+            <a href="/admin/users" id="adminMenu" style="display: none;">用户管理</a>
+            <a href="#" onclick="logout()">退出</a>
+        </div>
+    </div>
+    
+    {% block content %}{% endblock %}
+
+    <script>
+        // 退出登录
+        function logout() {
+            localStorage.removeItem('token');
+            window.location.href = '/login';
+        }
+
+        // 页面加载时检查用户角色
+        document.addEventListener('DOMContentLoaded', checkUserRole);
+    </script>
+</body>
+</html>

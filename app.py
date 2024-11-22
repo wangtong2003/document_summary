@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session, redirect, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 import asyncio
 from ollama import AsyncClient, Client
@@ -14,10 +14,49 @@ import uuid
 from datetime import datetime, timedelta
 import jwt
 from functools import wraps
+from werkzeug.utils import secure_filename
+from flask_jwt_extended import (
+    JWTManager, jwt_required, get_jwt_identity, create_access_token,
+    exceptions as jwt_exceptions
+)
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'md', 'epub'}
+
+# JWT配置
+app.config['JWT_SECRET_KEY'] = '3e8f44d5b59f969e020f82c088bf0c56bdccc1a13db66ac013edbb24dce572a7'  # 建议使用复杂的密钥
+app.config['JWT_TOKEN_LOCATION'] = ['headers']     # 指定从请求头中获取token
+app.config['JWT_HEADER_NAME'] = 'Authorization'    # 指定请求头的名称
+app.config['JWT_HEADER_TYPE'] = 'Bearer'          # 指定token前缀
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
+
+jwt = JWTManager(app)
+
+# 添加JWT错误处理
+@jwt.expired_token_loader
+def expired_token_callback(jwt_header, jwt_payload):
+    return jsonify({
+        'status': 401,
+        'sub_status': 42,
+        'msg': 'Token已过期'
+    }), 401
+
+@jwt.invalid_token_loader
+def invalid_token_callback(error):
+    return jsonify({
+        'status': 401,
+        'sub_status': 43,
+        'msg': '无效的Token'
+    }), 401
+
+@jwt.unauthorized_loader
+def missing_token_callback(error):
+    return jsonify({
+        'status': 401,
+        'sub_status': 44,
+        'msg': '缺少Token'
+    }), 401
 
 # 添加配置
 app.config['SECRET_KEY'] = '3e8f44d5b59f969e020f82c088bf0c56bdccc1a13db66ac013edbb24dce572a7'  # 用于 JWT
@@ -39,6 +78,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 # 数据库连接函数
 def get_db_connection():
     return mysql.connector.connect(**db_config)
+
 
 # 文档处理函数
 def read_pdf(file_path):
@@ -92,18 +132,72 @@ def read_document(file_path):
     else:
         raise ValueError("不支持的文件格式")
 
-def ollama_text(input_text, model='qwen2.5:3b'):
+def ollama_text(input_text, model='qwen2.5:0.5b'):
     try:
         client = Client(host='http://localhost:11434')
-        response = client.chat(model=model, messages=[
-            {
-                'role': 'user',
-                'content': input_text
+        # 构建提示模板
+        system_prompt = """You are a powerful AI assistant capable of reading text content and summarizing it. The purpose of the summary is to help users grasp the key points without reading the entire article.
+
+        [INSTRUCTIONS]
+        - Write a concise summary within 800 characters, capturing the essence of the article in one sentence;
+        - Outline the article in up to 10 points, with each point being less than 120 characters;
+        - Utilize only factual information from the original text. Refrain from fabricating content;
+        - Please use Arabic numerals for point numbering;
+        - Before finalizing, check the word count to ensure it is within the length limitation;
+        - If the text exceeds the length limitation, trim redundant parts;
+        - Do not use markdown format;
+        
+        <OUTPUT_FORMAT_1>
+        This is an example summary.
+        1.Point one.[P2]
+        2.Point two.[P2, P3]
+        ...
+        </OUTPUT_FORMAT_1>
+
+        <OUTPUT_FORMAT_2>
+        这是一个示例总结。
+        1.要点一。[P1]
+        2.要点二。[P1, P2, P3]
+        ...
+        </OUTPUT_FORMAT_2>
+        """
+        content=f"""
+        ARTICLE_TO_SUMMARY:
+        <ARTICLE>
+        {input_text}
+        </ARTICLE>
+
+
+        **Note:**
+        1.Please repeatedly check and confirm that the page numbers in the output match the page numbers in the input. 
+        2.Note that the summary should not be marked with page numbers, but each core event needs to be marked with page numbers.
+        3.Please re-check, if you do not meet the above three points, please revise it immediately
+        """
+        def generate():
+            response = client.generate(
+                model=model,
+                prompt=system_prompt,
+                stream=True
+            )
+            
+            for chunk in response:
+                if chunk and 'response' in chunk:
+                    # 使用 SSE 格式返回数据
+                    yield f"data: {chunk['response']}\n\n"
+                    
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
             }
-        ])
-        return response['message']['content']
+        )
+        
     except Exception as e:
-        raise Exception(f"Ollama服务错误: {str(e)}")
+        print(f"Ollama API错误: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -116,12 +210,12 @@ def login_required(f):
             return jsonify({'error': '未登录'}), 401
             
         try:
-            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
             request.user = payload
             return f(*args, **kwargs)
-        except jwt.ExpiredSignatureError:
+        except jwt_exceptions.ExpiredSignatureError:
             return jsonify({'error': 'token已过期'}), 401
-        except jwt.InvalidTokenError:
+        except jwt_exceptions.InvalidTokenError:
             return jsonify({'error': '无效的token'}), 401
             
     return decorated_function
@@ -129,121 +223,144 @@ def login_required(f):
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({'error': '未登录'}), 401
-            
         try:
-            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
-            if payload['role'] != 'admin':
-                return jsonify({'error': '需要管理员权限'}), 403
-            request.user = payload
-            return f(*args, **kwargs)
-        except jwt.ExpiredSignatureError:
-            return jsonify({'error': 'token已过期'}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({'error': '无效的token'}), 401
+            current_user = get_jwt_identity()
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT role FROM users WHERE id = %s", (current_user,))
+            user = cursor.fetchone()
             
+            if not user or user['role'] != 'admin':
+                return jsonify({'error': '需要管理员权限'}), 403
+                
+            return f(*args, **kwargs)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 401
+        finally:
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
     return decorated_function
+
+@app.errorhandler(404)
+def not_found_error(error):
+    print(f"404错误: {error}")  # 添加日志
+    return jsonify({'error': '请求的页面不存在'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    print(f"500错误: {error}")  # 添加日志
+    return jsonify({'error': '服务器内部错误'}), 500
 
 # 路由
 @app.route('/')
 def dashboard():
-    return render_template('dashboard.html')
+    token = request.headers.get('Authorization')
+    if not token:
+        # 尝试从 localStorage 获取 token
+        return render_template('dashboard.html')
+    try:
+        if not token.startswith('Bearer '):
+            token = f'Bearer {token}'
+        jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
+        return render_template('dashboard.html')
+    except:
+        return redirect(url_for('login_page'))
 
 @app.route('/upload', methods=['POST'])
+@jwt_required()
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({'error': '没有文件上传'}), 400
-    
-    file = request.files['file']
-    session_id = request.form.get('sessionId')  # 获取会话ID
-    
-    if file.filename == '':
-        return jsonify({'error': '未选择文件'}), 400
-    
-    if file and allowed_file(file.filename):
-        filename = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(filename)
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': '没有文件被上传'}), 400
+            
+        file = request.files['file']
+        if not file or not file.filename:
+            return jsonify({'error': '没有选择文件'}), 400
+            
+        if not allowed_file(file.filename):
+            return jsonify({'error': '不支持的文件格式'}), 400
 
-        def generate():
-            try:
-                # 读取文档内容
-                document_content = read_document(filename)
-                
-                # 保存用户的上传消息
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                try:
-                    cursor.execute(
-                        """INSERT INTO messages (session_id, content, is_user)
-                           VALUES (%s, %s, %s)""",
-                        (session_id, f"上传文件: {file.filename}", True)
-                    )
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-                
-                # 使用同步客户端
+        # 确保上传目录存在
+        if not os.path.exists(UPLOAD_FOLDER):
+            os.makedirs(UPLOAD_FOLDER)
+
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(file_path)
+        
+        try:
+            # 读取文档内容
+            text_content = read_document(file_path)
+            
+            def generate():
                 client = Client(host='http://localhost:11434')
-                response = client.chat(
-                    model='qwen2.5:3b',
-                    messages=[{
-                        'role': 'user',
-                        'content': ollama_text(document_content)
-                    }],
+                system_prompt = f"""
+                You are a powerful AI assistant capable of reading text content and summarizing it. The purpose of the summary is to help users grasp the key points without reading the entire article.
+
+                [INSTRUCTIONS]
+                - Write a concise summary within 800 characters, capturing the essence of the article in one sentence;
+                - Outline the article in up to 10 points, with each point being less than 120 characters;
+                - Utilize only factual information from the original text. Refrain from fabricating content;
+                - Please use Arabic numerals for point numbering;
+                - Before finalizing, check the word count to ensure it is within the length limitation;
+                - If the text exceeds the length limitation, trim redundant parts;
+                - Do not use markdown format;
+                - Please confirm the specific input language, and the output will also be in the corresponding language;
+
+                <OUTPUT_FORMAT_1>
+                This is an example summary.
+                1.Point one.[P2]
+                2.Point two.[P2, P3]
+                ...
+                </OUTPUT_FORMAT_1>
+
+                <OUTPUT_FORMAT_2>
+                这是一个示例总结。
+                1.要点一。[P1]
+                2.要点二。[P1, P2, P3]
+                ...
+                </OUTPUT_FORMAT_2>
+
+                ARTICLE_TO_SUMMARY:
+                <ARTICLE>
+                {text_content}
+                </ARTICLE>
+
+                **Note:**
+                1.Please repeatedly check and confirm that the page numbers in the output match the page numbers in the input. 
+                2.Note that the summary should not be marked with page numbers, but each core event needs to be marked with page numbers.
+                3.Please re-check, if you do not meet the above three points, please revise it immediately
+                """                
+                response = client.generate(
+                    model='qwen2.5:0.5b',
+                    prompt=system_prompt,
                     stream=True
                 )
                 
-                accumulated_response = ""
-                # 处理流式响应
-                for part in response:
-                    if part and 'message' in part and 'content' in part['message']:
-                        content = part['message']['content']
-                        accumulated_response += content
-                        yield content
+                for chunk in response:
+                    if chunk and 'response' in chunk:
+                        yield chunk['response']
+            
+            return Response(
+                stream_with_context(generate()),
+                mimetype='text/plain',
+                headers={
+                    'X-Accel-Buffering': 'no',
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive'
+                }
+            )
+            
+        finally:
+            # 清理上传的文件
+            if os.path.exists(file_path):
+                os.remove(file_path)
                 
-                # 保存AI的响应消息
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                try:
-                    cursor.execute(
-                        """INSERT INTO messages (session_id, content, is_user)
-                           VALUES (%s, %s, %s)""",
-                        (session_id, accumulated_response, False)
-                    )
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-                
-            except Exception as e:
-                error_message = f"发生错误：{str(e)}"
-                yield error_message
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                try:
-                    cursor.execute(
-                        """INSERT INTO messages (session_id, content, is_user)
-                           VALUES (%s, %s, %s)""",
-                        (session_id, error_message, False)
-                    )
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-            finally:
-                # 清理临时文件
-                if os.path.exists(filename):
-                    os.remove(filename)
-
-        return Response(
-            stream_with_context(generate()),
-            content_type='text/plain; charset=utf-8'
-        )
-    
-    return jsonify({'error': '不支持的文件格式'}), 400
+    except Exception as e:
+        print(f"处理文件错误: {str(e)}")
+        return jsonify({'error': f'上传处理失败: {str(e)}'}), 500
 
 # 会话管理API
 @app.route('/api/new-session', methods=['POST'])
@@ -283,12 +400,19 @@ def get_chat_history():
             FROM sessions s
             LEFT JOIN messages m ON s.id = m.session_id
             GROUP BY s.id
-            ORDER BY last_message_time DESC NULLS LAST
+            ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC
+            LIMIT 50
         """)
         sessions = cursor.fetchall()
         
+        # 转换datetime对象为字符串
+        for session in sessions:
+            if session['last_message_time']:
+                session['last_message_time'] = session['last_message_time'].strftime('%Y-%m-%d %H:%M:%S')
+        
         return jsonify(sessions)
     except Exception as e:
+        print(f"获取聊天历史错误: {str(e)}")
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
@@ -301,7 +425,15 @@ def get_session(session_id):
     
     try:
         # 获取会话信息
-        cursor.execute("SELECT * FROM sessions WHERE id = %s", (session_id,))
+        cursor.execute("""
+            SELECT s.*, 
+                   COUNT(m.id) as message_count,
+                   MAX(m.created_at) as last_message_time
+            FROM sessions s
+            LEFT JOIN messages m ON s.id = m.session_id
+            WHERE s.id = %s
+            GROUP BY s.id
+        """, (session_id,))
         session = cursor.fetchone()
         
         if not session:
@@ -314,31 +446,63 @@ def get_session(session_id):
         )
         messages = cursor.fetchall()
         
+        # 转换datetime对象为字符串
+        for message in messages:
+            if message['created_at']:
+                message['created_at'] = message['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        
         session['messages'] = messages
         return jsonify(session)
     except Exception as e:
+        print(f"获取会话详情错误: {str(e)}")
         return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
 
 @app.route('/api/save-message', methods=['POST'])
+@jwt_required()
 def save_message():
-    data = request.json
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
     try:
-        cursor.execute(
-            """INSERT INTO messages (session_id, content, is_user)
-               VALUES (%s, %s, %s)""",
-            (data['sessionId'], data['content'], data['isUser'])
-        )
-        conn.commit()
+        current_user = get_jwt_identity()
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
-        return jsonify({'success': True})
+        cursor.execute('''
+            INSERT INTO messages (user_id, session_id, content, is_user)
+            VALUES (%s, %s, %s, %s)
+        ''', (current_user, data['sessionId'], data['content'], data['isUser']))
+        
+        conn.commit()
+        return jsonify({'message': '消息保存成功'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"保存消息错误: {str(e)}")
+        return jsonify({'error': '保存消息失败'}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+# 获取会话历史消息
+@app.route('/api/messages/<session_id>', methods=['GET'])
+@jwt_required()
+def get_session_messages(session_id):
+    try:
+        current_user = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute('''
+            SELECT * FROM messages 
+            WHERE user_id = %s AND session_id = %s 
+            ORDER BY created_at ASC
+        ''', (current_user, session_id))
+        
+        messages = cursor.fetchall()
+        return jsonify(messages)
+    except Exception as e:
+        print(f"获取消息错误: {str(e)}")
+        return jsonify({'error': '获取消息失败'}), 500
     finally:
         cursor.close()
         conn.close()
@@ -436,50 +600,71 @@ def register():
         cursor.close()
         conn.close()
 
-# 用户登录
+# 用户认证路由
+@app.route('/api/user')
+@jwt_required()
+def get_user():
+    try:
+        current_user_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("SELECT id, username, role FROM users WHERE id = %s", (current_user_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': '用户不存在'}), 404
+            
+        return jsonify({
+            'id': user['id'],
+            'username': user['username'],
+            'role': user['role']
+        })
+        
+    except Exception as e:
+        print(f"获取用户信息错误: {str(e)}")
+        return jsonify({'error': '获取用户信息失败'}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+# 登录路由
 @app.route('/api/login', methods=['POST'])
 def login():
-    data = request.json
-    print(f"登录请求数据: {data}")  # 添加调试日志
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
     try:
-        cursor.execute(
-            "SELECT * FROM users WHERE username = %s",
-            (data['username'],)
-        )
-        user = cursor.fetchone()
-        print(f"查询到的用户: {user}")  # 添加调试日志
+        data = request.json
+        username = data.get('username')
+        password = data.get('password')
         
-        if not user or not check_password_hash(user['password'], data['password']):
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+        
+        if user and check_password_hash(user['password'], password):
+            access_token = create_access_token(identity=user['id'])
+            return jsonify({
+                'token': access_token,
+                'user': {
+                    'id': user['id'],
+                    'username': user['username'],
+                    'role': user['role']
+                }
+            })
+        else:
             return jsonify({'error': '用户名或密码错误'}), 401
             
-        # 生成 JWT token，添加算法参数
-        token = jwt.encode({
-            'user_id': user['id'],
-            'username': user['username'],
-            'role': user['role'],
-            'exp': datetime.utcnow() + timedelta(days=1)
-        }, app.config['SECRET_KEY'], algorithm='HS256')  # 指定算法
-        
-        print(f"生成的token: {token}")  # 添加调试日志
-        
-        return jsonify({
-            'token': token,
-            'user': {
-                'id': user['id'],
-                'username': user['username'],
-                'email': user['email'],
-                'role': user['role']
-            }
-        })
     except Exception as e:
-        print(f"登录错误: {str(e)}")  # 添加调试日志
-        return jsonify({'error': str(e)}), 500
+        print(f"登录错误: {str(e)}")
+        return jsonify({'error': '登录失败'}), 500
     finally:
-        cursor.close()
-        conn.close()
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
 # 用户注销
 @app.route('/api/logout', methods=['POST'])
@@ -495,12 +680,8 @@ def get_user_profile():
         return jsonify({'error': '未登录'}), 401
         
     try:
-        # 验证 token，添加算法参数
-        payload = jwt.decode(
-            token.split(' ')[1], 
-            app.config['SECRET_KEY'], 
-            algorithms=['HS256']  # 指定算法
-        )
+        # 验证 token
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
         user_id = payload['user_id']
         
         conn = get_db_connection()
@@ -513,12 +694,12 @@ def get_user_profile():
         user = cursor.fetchone()
         
         if not user:
-            return jsonify({'error': '用户不存在'}), 404
+            return jsonify({'error': '用不存在'}), 404
             
         return jsonify(user)
-    except jwt.ExpiredSignatureError:
+    except jwt_exceptions.ExpiredSignatureError:
         return jsonify({'error': 'token已过期'}), 401
-    except jwt.InvalidTokenError:
+    except jwt_exceptions.InvalidTokenError:
         return jsonify({'error': '无效的token'}), 401
     except Exception as e:
         print(f"获取用户信息错误: {str(e)}")  # 添加调试日志
@@ -535,7 +716,7 @@ def add_favorite():
         return jsonify({'error': '未登录'}), 401
         
     try:
-        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
         user_id = payload['user_id']
         
         data = request.json
@@ -550,7 +731,7 @@ def add_favorite():
         )
         conn.commit()
         
-        return jsonify({'message': '收藏成功'})
+        return jsonify({'message': '收藏成'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
@@ -565,7 +746,7 @@ def get_favorites():
         return jsonify({'error': '未登录'}), 401
         
     try:
-        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'])
+        payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
         user_id = payload['user_id']
         
         conn = get_db_connection()
@@ -596,7 +777,134 @@ def login_page():
 def register_page():
     return render_template('register.html')
 
-# 在 app.py 中添加初始化管理员账户的函数
+# 获取当前用户信息
+@app.route('/api/user')
+@login_required
+def get_current_user():
+    token = request.headers.get('Authorization')
+    try:
+        token = token.split(' ')[1]
+        payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute(
+            """SELECT id, username, email, role, created_at 
+               FROM users 
+               WHERE id = %s""",
+            (payload['user_id'],)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            return jsonify({'error': '用户不存在'}), 404
+            
+        return jsonify(user)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+# 用户管理页面路由
+@app.route('/admin/users')
+def admin_users():
+    return render_template('admin/users.html')
+
+# 获取用户列表 API
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, username, email, role, created_at FROM users")
+        users = cursor.fetchall()
+        return jsonify(users)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# 更新用户角色 API
+@app.route('/api/users/<user_id>/role', methods=['PUT'])
+def update_user_role(user_id):
+    try:
+        data = request.get_json()
+        new_role = data.get('role')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET role = %s WHERE id = %s",
+            (new_role, user_id)
+        )
+        conn.commit()
+        return jsonify({'message': '角色更新成功'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # 返回空响应，状态码204表示无容
+
+def simple_auth_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token or not token.startswith('Bearer '):
+            return jsonify({
+                'status': 401,
+                'sub_status': 44,
+                'msg': '缺少Token'
+            }), 401
+            
+        return f(*args, **kwargs)
+    return decorated_function
+
+# 保存摘要记录
+@app.route('/api/save-summary', methods=['POST'])
+@jwt_required()
+def save_summary():
+    try:
+        current_user = get_jwt_identity()
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO summaries (user_id, file_name, content, created_at)
+            VALUES (%s, %s, %s, NOW())
+        ''', (current_user, data['file_name'], data['content']))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': '保存成功'})
+    except Exception as e:
+        print(f"发生错误: {str(e)}")
+        return jsonify({'error': '保存失败'}), 500
+
+# 获取用户的摘要历史
+@app.route('/api/summaries', methods=['GET'])
+@jwt_required()
+def get_summaries():
+    try:
+        current_user = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM summaries WHERE user_id = %s', (current_user,))
+        summaries = cursor.fetchall()
+        conn.close()
+        
+        return jsonify([{
+            'id': s[0],
+            'file_name': s[2],
+            'content': s[3],
+            'created_at': s[4]
+        } for s in summaries])
+    except Exception as e:
+        print(f"发生错误: {str(e)}")
+        return jsonify({'error': '获取摘要历史失败'}), 500
+
+# 初始化管理员账户的函数
 def init_admin():
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -623,7 +931,8 @@ def init_admin():
         cursor.close()
         conn.close()
 
-# 在应用启动时初始化管理员账户
+# 在应用动时初化管理员账户
 if __name__ == '__main__':
     init_admin()  # 添加这行
-    app.run(debug=True, port=5000) 
+    app.run(debug=True, port=5000)
+

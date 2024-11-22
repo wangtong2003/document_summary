@@ -154,20 +154,23 @@
                 const response = await fetch('/api/login', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ username, password })
                 });
 
                 const data = await response.json();
-
-                if (!response.ok) {
+                
+                if (response.ok) {
+                    // 保存 token
+                    localStorage.setItem('token', data.token);
+                    // 保存用户信息
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                    // 直接重定向到首页
+                    window.location.replace('/');
+                } else {
                     throw new Error(data.error || '登录失败');
                 }
-
-                localStorage.setItem('token', data.token);
-                localStorage.setItem('user', JSON.stringify(data.user));
-                window.location.href = '/';
             } catch (error) {
                 errorText.textContent = error.message;
                 errorMessage.style.display = 'block';

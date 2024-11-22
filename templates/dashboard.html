@@ -6,6 +6,8 @@
     <title>文档摘要生成器</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.2.0/github-markdown.min.css">
     <style>
         :root {
             --primary-color: #4A90E2;
@@ -206,6 +208,36 @@
             height: 1rem;
         }
 
+        .loading-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: var(--primary-color);
+            border-radius: 50%;
+            margin: 0 2px;
+            opacity: 0.6;
+            animation: loadingDot 1.4s infinite ease-in-out;
+        }
+
+        .loading-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .loading-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes loadingDot {
+            0%, 80%, 100% { 
+                transform: scale(0.6);
+                opacity: 0.4;
+            }
+            40% { 
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
         @media (max-width: 768px) {
             .upload-container {
                 margin: 0.5rem 1rem;
@@ -217,21 +249,16 @@
     <!-- 导航栏 -->
     <nav class="navbar navbar-expand-lg fixed-top">
         <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="bi bi-file-earmark-text me-2"></i>
-                文档摘要生成器
-            </a>
-            <div class="ms-auto">
-                <div class="dropdown">
-                    <button class="btn btn-light dropdown-toggle" type="button" id="userDropdown" data-bs-toggle="dropdown">
-                        <i class="bi bi-person-circle me-2"></i>
-                        <span id="username"></span>
+            <a class="navbar-brand" href="#">文档摘要生成器</a>
+            <div class="d-flex align-items-center">
+                <div class="me-3" id="userInfo"></div>
+                <div class="d-flex">
+                    <a href="/admin/users" class="btn btn-outline-secondary me-2" id="adminLink" style="display: none;">
+                        <i class="bi bi-people"></i> 用户管理
+                    </a>
+                    <button class="btn btn-outline-secondary" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> 退出
                     </button>
-                    <ul class="dropdown-menu dropdown-menu-end">
-                        <li><a class="dropdown-item" href="#" id="logoutBtn">
-                            <i class="bi bi-box-arrow-right me-2"></i>注销
-                        </a></li>
-                    </ul>
                 </div>
             </div>
         </div>
@@ -257,7 +284,7 @@
                     <!-- 消息将在这里动态添加 -->
                 </div>
                 
-                <!-- 将上传区域移到底部 -->
+                <!-- 上传区域 -->
                 <div class="input-area">
                     <div class="upload-container">
                         <div class="upload-area" id="uploadArea">
@@ -272,7 +299,7 @@
                             </div>
                             <div class="file-info" id="fileInfo"></div>
                         </div>
-                        <button class="btn btn-primary btn-sm" id="submitBtn" disabled>
+                        <button class="btn btn-primary" id="submitBtn" disabled>
                             <span class="spinner-border spinner-border-sm" id="loadingSpinner" role="status" hidden></span>
                             <span class="btn-text">上传并处理</span>
                         </button>
@@ -286,6 +313,14 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
+        // 在 script 标签开始处添加 marked 配置
+        marked.setOptions({
+            breaks: true,  // 支换行
+            gfm: true,     // 启用 GitHub 风格 Markdown
+            headerIds: false,
+            mangle: false
+        });
+
         // 获取DOM元素
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
@@ -294,11 +329,11 @@
         const chatBody = document.getElementById('chatBody');
         const historyList = document.getElementById('historyList');
         const newChatBtn = document.getElementById('newChatBtn');
-        const loadingSpinner = document.querySelector('.loading-spinner');
+        const loadingSpinner = document.getElementById('loadingSpinner');
         let currentSessionId = null;
         let currentUser = null;
 
-        // 检查登录状态
+        // 添加认证检查中间件
         async function checkAuth() {
             const token = localStorage.getItem('token');
             if (!token) {
@@ -307,26 +342,52 @@
             }
 
             try {
-                const response = await fetch('/api/user/profile', {
+                const response = await fetch('/api/user', {
                     headers: {
                         'Authorization': `Bearer ${token}`
                     }
                 });
-
+                
                 if (!response.ok) {
-                    throw new Error('验证失败');
+                    throw new Error('认证失败');
                 }
-
-                const user = await response.json();
-                currentUser = user;
-                document.getElementById('username').textContent = user.username;
-                return user;
+                
+                const data = await response.json();
+                // 设置用户信息
+                document.getElementById('userInfo').textContent = data.username;
+                // 设置管理员菜单
+                if (data.role === 'admin') {
+                    document.getElementById('adminLink').style.display = 'inline-block';
+                }
+                
+                return data;
             } catch (error) {
-                console.error('验证错误:', error);
+                console.error('认证错误:', error);
                 localStorage.removeItem('token');
-                localStorage.removeItem('user');
                 window.location.href = '/login';
             }
+        }
+
+        // 添加加载画消息
+        function addLoadingMessage() {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message message-assistant';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content d-flex align-items-center gap-2';
+            contentDiv.style.minHeight = '24px';
+            
+            for (let i = 0; i < 3; i++) {
+                const dot = document.createElement('div');
+                dot.className = 'loading-dot';
+                contentDiv.appendChild(dot);
+            }
+            
+            messageDiv.appendChild(contentDiv);
+            chatBody.appendChild(messageDiv);
+            chatBody.scrollTop = chatBody.scrollHeight;
+            
+            return messageDiv;
         }
 
         // 更新上传区域显示
@@ -334,7 +395,7 @@
             fileInfo.textContent = `已选择文件: ${file.name}`;
             fileInfo.style.display = 'block';
             submitBtn.disabled = false;
-            uploadArea.querySelector('.upload-text').textContent = '点击更换文件';
+            uploadArea.querySelector('span').textContent = '点击更换文件';
         }
 
         // 添加消息到聊天区域
@@ -343,8 +404,12 @@
             messageDiv.className = `message message-${isUser ? 'user' : 'assistant'}`;
             
             const contentDiv = document.createElement('div');
-            contentDiv.className = 'message-content';
-            contentDiv.innerHTML = isUser ? content : marked.parse(content);
+            contentDiv.className = 'message-content markdown-body';
+            
+            if (content) {
+                // 对助手消息使 marked 解析 Markdown
+                contentDiv.innerHTML = isUser ? content : marked.parse(content);
+            }
             
             messageDiv.appendChild(contentDiv);
             chatBody.appendChild(messageDiv);
@@ -357,28 +422,40 @@
         function resetUploadArea() {
             fileInput.value = '';
             fileInfo.style.display = 'none';
+            fileInfo.textContent = '';
             submitBtn.disabled = true;
-            uploadArea.querySelector('.upload-text').textContent = '点击或拖拽文件到这里';
+            submitBtn.querySelector('.btn-text').textContent = '上传并处理';
+            submitBtn.querySelector('.spinner-border').hidden = true;
+            uploadArea.querySelector('span').textContent = '点击或拖拽文件到这里';
         }
 
-        // 事件监听器
-        uploadArea.onclick = () => fileInput.click();
-
-        fileInput.onchange = () => {
-            const file = fileInput.files[0];
-            if (file) {
-                updateUploadAreaWithFile(file);
+        // 处理流式响应数
+        async function handleStreamResponse(response, messageContent) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedText = '';
+            
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const text = decoder.decode(value, { stream: true });
+                    if (text.trim()) {
+                        accumulatedText += text;
+                        messageContent.innerHTML = marked.parse(accumulatedText);
+                        messageContent.parentElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                    }
+                }
+                
+                // 保存完整的文本内容
+                return accumulatedText;
+            } catch (error) {
+                console.error('处理式响应错误:', error);
+                messageContent.innerHTML = '处理响应时发生错误';
+                throw error;
             }
-        };
-
-        uploadArea.ondragover = (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        };
-
-        uploadArea.ondragleave = () => {
-            uploadArea.classList.remove('dragover');
-        };
+        }
 
         uploadArea.ondrop = (e) => {
             e.preventDefault();
@@ -393,33 +470,38 @@
 
         // 提交按钮点击事件
         submitBtn.onclick = async function() {
-            if (!currentSessionId) {
-                try {
-                    const response = await fetch('/api/new-session', {
-                        method: 'POST'
-                    });
-                    const session = await response.json();
-                    currentSessionId = session.id;
-                } catch (error) {
-                    console.error('创建会话失败:', error);
-                    return;
-                }
+            if (!fileInput.files[0]) {
+                showError('请选择文件');
+                return;
             }
 
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            formData.append('sessionId', currentSessionId);
-
-            const fileName = fileInput.files[0].name;
-            addMessage(`上传文件: ${fileName}`, true);
-
-            submitBtn.disabled = true;
-            loadingSpinner.style.display = 'inline-block';
-            const loadingMsg = addMessage('正在处理...');
-
+            // 获取按钮文本元素
+            const btnText = submitBtn.querySelector('.btn-text');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+            
             try {
+                // 禁用按钮，显示加载状态
+                submitBtn.disabled = true;
+                loadingSpinner.hidden = false;
+                btnText.textContent = '处理中...';
+                
+                if (!currentSessionId) {
+                    const sessionResponse = await fetch('/api/new-session', { method: 'POST' });
+                    const session = await sessionResponse.json();
+                    currentSessionId = session.id;
+                }
+
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                formData.append('sessionId', currentSessionId);
+
+                const loadingMsg = addLoadingMessage();
+
                 const response = await fetch('/upload', {
                     method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    },
                     body: formData
                 });
 
@@ -428,33 +510,24 @@
                     throw new Error(errorData.error || '上传失败');
                 }
 
+                // 移除加载消息
                 loadingMsg.remove();
-                loadingSpinner.style.display = 'none';
-
+                
+                // 处理响应...
                 const messageDiv = addMessage('', false);
                 const messageContent = messageDiv.querySelector('.message-content');
-                let accumulatedText = '';
+                
+                await handleStreamResponse(response, messageContent);
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-
-                while (true) {
-                    const {value, done} = await reader.read();
-                    if (done) break;
-                    
-                    const text = decoder.decode(value, {stream: true});
-                    accumulatedText += text;
-                    messageContent.innerHTML = marked.parse(accumulatedText);
-                    chatBody.scrollTop = chatBody.scrollHeight;
-                }
-
-                resetUploadArea();
-                await loadChatHistory();
             } catch (error) {
-                loadingMsg.remove();
-                loadingSpinner.style.display = 'none';
-                addMessage(`错误: ${error.message}`, false);
+                console.error('上传文件错误:', error);
+                showError(error.message);
+            } finally {
+                // 重置按钮状态
                 submitBtn.disabled = false;
+                loadingSpinner.hidden = true;
+                btnText.textContent = '上传并处理';
+                resetUploadArea();
             }
         };
 
@@ -477,12 +550,247 @@
         // 页面加载完成后初始化
         window.onload = async function() {
             try {
-                await checkAuth();
-                await loadChatHistory();
+                const userData = await checkAuth();
+                if (userData) {
+                    await loadSummaryHistory();
+                    document.getElementById('fileInput').disabled = false;
+                    document.getElementById('submitBtn').disabled = false;
+                }
             } catch (error) {
-                console.error('初始化错误:', error);
+                console.error('初始化误:', error);
+                window.location.href = '/login';
             }
         };
+
+        function showError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'alert alert-danger';
+            errorDiv.textContent = message;
+            chatBody.appendChild(errorDiv);
+            chatBody.scrollTop = chatBody.scrollHeight;
+        }
+
+        // 添加加载摘要历史的函数
+        async function loadSummaryHistory() {
+            try {
+                const response = await fetch('/api/summaries', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('获取摘要历史失败');
+                }
+                
+                const summaries = await response.json();
+                historyList.innerHTML = '';
+                
+                if (summaries.length === 0) {
+                    // 如果没有历史记录，显示友好提示
+                    const emptyDiv = document.createElement('div');
+                    emptyDiv.className = 'text-center text-muted p-3';
+                    emptyDiv.innerHTML = `
+                        <i class="bi bi-clock-history fs-4 mb-2"></i>
+                        <p class="mb-0">暂无历史记录</p>
+                        <small>上传文件生成摘要后会显示在这里</small>
+                    `;
+                    historyList.appendChild(emptyDiv);
+                    return;
+                }
+                
+                summaries.forEach(summary => {
+                    const summaryDiv = document.createElement('div');
+                    summaryDiv.className = 'history-item';
+                    summaryDiv.innerHTML = `
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span>${summary.file_name}</span>
+                            <small class="text-muted">${summary.created_at}</small>
+                        </div>
+                    `;
+                    summaryDiv.onclick = () => {
+                        chatBody.innerHTML = '';
+                        addMessage(summary.content, false);
+                    };
+                    historyList.appendChild(summaryDiv);
+                });
+            } catch (error) {
+                console.error('加载摘要历史错误:', error);
+                // 不显示错误提示，而是显示空状态
+                const emptyDiv = document.createElement('div');
+                emptyDiv.className = 'text-center text-muted p-3';
+                emptyDiv.innerHTML = `
+                    <i class="bi bi-clock-history fs-4 mb-2"></i>
+                    <p class="mb-0">暂无历史记录</p>
+                    <small>上传文件成摘要后会显示在这里</small>
+                `;
+                historyList.innerHTML = '';
+                historyList.appendChild(emptyDiv);
+            }
+        }
+
+        // 保存消息记录
+        async function saveMessage(content, isUser) {
+            try {
+                await fetch('/api/save-message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    },
+                    body: JSON.stringify({
+                        sessionId: currentSessionId,
+                        content: content,
+                        isUser: isUser
+                    })
+                });
+            } catch (error) {
+                console.error('保存消息错误:', error);
+            }
+        }
+
+        // 加载会话历史消息
+        async function loadSessionMessages(sessionId) {
+            try {
+                const response = await fetch(`/api/messages/${sessionId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+                
+                if (!response.ok) throw new Error('获取消息失败');
+                
+                scrollToBottom();
+            } catch (error) {
+                console.error('加载消息错误:', error);
+                showError(error.message);
+            }
+        }
+
+        async function createNewSession() {
+            try {
+                const response = await fetch('/api/new-session', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+                
+                if (!response.ok) throw new Error('创建话失败');
+                
+                const data = await response.json();
+                currentSessionId = data.sessionId;
+                
+                // 加载新会话的消息历史
+                await loadSessionMessages(currentSessionId);
+            } catch (error) {
+                console.error('创建会话错误:', error);
+                showError(error.message);
+            }
+        }
+
+        // 在页面加载时检用户角色
+        async function checkUserRole() {
+            try {
+                const response = await fetch('/api/user', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+                
+                if (response.ok) {
+                    const user = await response.json();
+                    // 如果是管理员，显示用户管理链接
+                    if (user.role === 'admin') {
+                        document.getElementById('adminLink').style.display = 'inline-block';
+                    }
+                }
+            } catch (error) {
+                console.error('检查用户角色失败:', error);
+            }
+        }
+
+        // 页面加载时调用
+        document.addEventListener('DOMContentLoaded', checkUserRole);
+
+        // 在用户管理链接点击时处理
+        document.getElementById('adminLink').addEventListener('click', function(e) {
+            e.preventDefault();
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = '/login';
+                return;
+            }
+            window.location.href = '/admin/users';
+        });
+
+
+        // 添加 updateUserRole 函数
+        async function updateUserRole(userId, newRole) {
+            const token = localStorage.getItem('token'); // 在函数内部获取 token
+            try {
+                const response = await fetch(`/api/users/${userId}/role`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ role: newRole })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('更新角色失败');
+                }
+                
+                showMessage('角色更新成功');
+                loadUsers();  // 刷新用户列表
+            } catch (error) {
+                showMessage(error.message, true);
+            }
+        }
+
+        // 文件上传相关的事件监听
+        document.addEventListener('DOMContentLoaded', function() {
+
+            // 文件选择变化时的处理
+            fileInput.addEventListener('change', function() {
+                const file = this.files[0];
+                if (file) {
+                    updateUploadAreaWithFile(file);
+                    // 确保提交按钮可用
+                    submitBtn.disabled = false;
+                    submitBtn.querySelector('.btn-text').textContent = '上传并处理';
+                    submitBtn.querySelector('.spinner-border').hidden = true;
+                }
+            });
+
+            // 上传区域的点击事件
+            uploadArea.addEventListener('click', (e) => {
+                e.preventDefault();
+                fileInput.click();
+            });
+
+            // 拖拽处理
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+
+            uploadArea.addEventListener('dragleave', () => {
+                uploadArea.classList.remove('dragover');
+            });
+
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                const file = e.dataTransfer.files[0];
+                if (file) {
+                    fileInput.files = e.dataTransfer.files;
+                    updateUploadAreaWithFile(file);
+                    submitBtn.disabled = false;
+                }
+            });
+        });
     </script>
 </body>
 </html>

@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档摘要库</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #4A90E2;
+            --secondary-color: #6c757d;
+        }
+
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            padding-top: 70px;
+        }
+
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        .summary-card {
+            transition: all 0.3s ease;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            height: 100%;
+        }
+
+        .summary-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .file-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+
+        .status-dot.opened {
+            background-color: #28a745;
+        }
+
+        .status-dot.unopened {
+            background-color: #dc3545;
+        }
+
+        .summary-preview {
+            max-height: 80px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #6c757d;
+        }
+
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            color: #dee2e6;
+        }
+
+        .modal-content {
+            border-radius: 0.5rem;
+        }
+
+        .modal-header {
+            border-bottom: 1px solid #dee2e6;
+            background-color: #f8f9fa;
+        }
+
+        .btn-custom {
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s;
+        }
+
+        .btn-custom:hover {
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-file-text me-2"></i>文档摘要生成器
+            </a>
+            <div class="d-flex align-items-center">
+                <a href="/" class="btn btn-outline-primary btn-custom me-3">
+                    <i class="bi bi-house-door"></i> 返回首页
+                </a>
+                <span class="me-3 text-secondary" id="userInfo"></span>
+                <div class="d-flex">
+                    <a href="/admin/users" class="btn btn-outline-secondary btn-custom me-2" id="adminLink" style="display: none;">
+                        <i class="bi bi-people"></i> 用户管理
+                    </a>
+                    <button class="btn btn-outline-danger btn-custom" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> 退出
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主要内容 -->
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="mb-0">我的文档摘要库</h2>
+            <div class="d-flex gap-2">
+                <div class="input-group">
+                    <input type="text" class="form-control" id="searchInput" placeholder="搜索文档...">
+                    <button class="btn btn-outline-secondary" type="button">
+                        <i class="bi bi-search"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row g-4" id="summariesContainer">
+            <!-- 空状态显示 -->
+            <div class="col-12 empty-state" id="emptyState" style="display: none;">
+                <i class="bi bi-folder2-open"></i>
+                <h4>暂无文档摘要</h4>
+                <p class="text-muted">您还没有生成任何文档摘要，请返回首页上传文档。</p>
+                <a href="/" class="btn btn-primary btn-custom">
+                    <i class="bi bi-plus-lg"></i> 新建摘要
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 摘要详情模态框 -->
+    <div class="modal fade" id="summaryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-file-text me-2"></i>文档摘要详情
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="summaryDetail"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 获取文件类型对应的图标
+        function getFileIcon(fileType) {
+            const iconMap = {
+                'pdf': 'bi-file-pdf',
+                'docx': 'bi-file-word',
+                'txt': 'bi-file-text',
+                'md': 'bi-markdown',
+                'epub': 'bi-book'
+            };
+            return iconMap[fileType.toLowerCase()] || 'bi-file-earmark';
+        }
+
+        // 加载摘要列表
+        async function loadSummaries() {
+            try {
+                const token = localStorage.getItem('token');
+                const container = document.getElementById('summariesContainer');
+                const emptyState = document.getElementById('emptyState');
+
+                // 如果没有token，显示空状态
+                if (!token) {
+                    emptyState.style.display = 'block';
+                    container.innerHTML = '';
+                    return;
+                }
+
+                const response = await fetch('/api/summaries', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    emptyState.style.display = 'block';
+                    container.innerHTML = '';
+                    return;
+                }
+
+                const summaries = await response.json();
+
+                if (!summaries || summaries.length === 0) {
+                    emptyState.style.display = 'block';
+                    container.innerHTML = '';
+                    return;
+                }
+
+                emptyState.style.display = 'none';
+                container.innerHTML = summaries.map(summary => `
+                    <div class="col-md-4">
+                        <div class="card summary-card h-100" onclick="showSummaryDetail(${summary.id})">
+                            <div class="card-body text-center">
+                                <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
+                                <h5 class="card-title text-truncate">${summary.file_name}</h5>
+                                <p class="card-text">
+                                    <span class="status-dot ${summary.is_opened ? 'opened' : 'unopened'}"></span>
+                                    ${summary.is_opened ? '已查看' : '未查看'}
+                                </p>
+                                <div class="summary-preview mb-3">
+                                    ${summary.content}
+                                </div>
+                                <small class="text-muted">
+                                    <i class="bi bi-clock me-1"></i>${new Date(summary.created_at).toLocaleString()}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('emptyState').style.display = 'block';
+            }
+        }
+
+        // 显示摘要详情
+        async function showSummaryDetail(summaryId) {
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch(`/api/summaries/${summaryId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('获取摘要详情失败');
+                }
+
+                const summary = await response.json();
+                const detailContainer = document.getElementById('summaryDetail');
+                detailContainer.innerHTML = `
+                    <div class="mb-3">
+                        <h4>${summary.file_name}</h4>
+                        <small class="text-muted">创建时间：${summary.created_at}</small>
+                    </div>
+                    <div class="mb-3">
+                        <pre class="bg-light p-3 rounded">${summary.content}</pre>
+                    </div>
+                    <div class="text-end">
+                        <button class="btn btn-danger" onclick="deleteSummary(${summary.id})">
+                            删除摘要
+                        </button>
+                    </div>
+                `;
+
+                const modal = new bootstrap.Modal(document.getElementById('summaryModal'));
+                modal.show();
+            } catch (error) {
+                console.error('Error:', error);
+                alert('获取摘要详情失败');
+            }
+        }
+
+        // 删除摘要
+        async function deleteSummary(summaryId) {
+            if (!confirm('确定要删除这个摘要吗？')) {
+                return;
+            }
+
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch(`/api/summaries/${summaryId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('删除摘要失败');
+                }
+
+                // 关闭模态框并重新加载列表
+                const modal = bootstrap.Modal.getInstance(document.getElementById('summaryModal'));
+                modal.hide();
+                loadSummaries();
+            } catch (error) {
+                console.error('Error:', error);
+                alert('删除摘要失败');
+            }
+        }
+
+        // 页面加载时检查认证并加载摘要
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadSummaries();  // 直接加载摘要，不强制要求认证
+        });
+
+        // 添加到现有脚本的开头
+        async function checkAuth() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = '/login';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/user', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error('认证失败');
+                }
+                
+                const data = await response.json();
+                document.getElementById('userInfo').textContent = data.username;
+                if (data.role === 'admin') {
+                    document.getElementById('adminLink').style.display = 'inline-block';
+                }
+                
+                return data;
+            } catch (error) {
+                console.error('认证错误:', error);
+                localStorage.removeItem('token');
+                window.location.href = '/login';
+            }
+        }
+
+        // 添加退出功能
+        document.getElementById('logoutBtn').onclick = async function() {
+            try {
+                await fetch('/api/logout', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+            } finally {
+                localStorage.removeItem('token');
+                window.location.href = '/login';
+            }
+        };
+
+        // 搜索功能
+        document.getElementById('searchInput').addEventListener('input', function(e) {
+            const searchText = e.target.value.toLowerCase();
+            const cards = document.querySelectorAll('.summary-card');
+            
+            cards.forEach(card => {
+                const title = card.querySelector('.card-title').textContent.toLowerCase();
+                const content = card.querySelector('.summary-preview').textContent.toLowerCase();
+                const matches = title.includes(searchText) || content.includes(searchText);
+                card.closest('.col-md-4').style.display = matches ? 'block' : 'none';
+            });
+        });
+    </script>
+</body>
+</html> 

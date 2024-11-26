@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session, redirect, url_for
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session, redirect, url_for, make_response
 from werkzeug.security import generate_password_hash, check_password_hash
 import asyncio
 from ollama import AsyncClient, Client
@@ -30,6 +30,9 @@ app.config['JWT_TOKEN_LOCATION'] = ['headers']     # 指定从请求头中获取
 app.config['JWT_HEADER_NAME'] = 'Authorization'    # 指定请求头的名称
 app.config['JWT_HEADER_TYPE'] = 'Bearer'          # 指定token前缀
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
+# 在 Flask 应用配置中添加
+app.config['JSON_AS_ASCII'] = False
+app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 
 jwt = JWTManager(app)
 
@@ -132,7 +135,7 @@ def read_document(file_path):
     else:
         raise ValueError("不支持的文件格式")
 
-def ollama_text(input_text, model='qwen2.5:0.5b'):
+def ollama_text(input_text, model='qwen2.5:3b'):
     try:
         client = Client(host='http://localhost:11434')
         # 构建提示模板
@@ -200,7 +203,12 @@ def ollama_text(input_text, model='qwen2.5:0.5b'):
         return jsonify({'error': str(e)}), 500
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    # 更严格的文件名检查
+    if not filename or '.' not in filename:
+        return False
+    # 获取最后一个点后面的扩展名
+    extension = filename.rsplit('.', 1)[-1].lower()
+    return extension in ALLOWED_EXTENSIONS
 
 def login_required(f):
     @wraps(f)
@@ -252,299 +260,153 @@ def not_found_error(error):
 def internal_error(error):
     print(f"500错误: {error}")  # 添加日志
     return jsonify({'error': '服务器内部错误'}), 500
+@app.after_request
+def after_request(response):
+    # 对所有 JSON 响应设置正确的编码
+    if response.mimetype == 'application/json':
+        response.headers['Content-Type'] = 'application/json; charset=utf-8'
+        
+        # 打印响应内容用于调试
+        print('Response headers:', dict(response.headers))
+        print('Response data:', response.get_data(as_text=True))
+        
+    return response
+
+@app.errorhandler(Exception)
+def handle_error(error):
+    print(f"发生错误: {str(error)}")
+    response = jsonify({
+        'error': str(error),
+        'success': False
+    })
+    response.headers['Content-Type'] = 'application/json; charset=utf-8'
+    return response, 500
 
 # 路由
 @app.route('/')
 def dashboard():
-    token = request.headers.get('Authorization')
-    if not token:
-        # 尝试从 localStorage 获取 token
-        return render_template('dashboard.html')
-    try:
-        if not token.startswith('Bearer '):
-            token = f'Bearer {token}'
-        jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
-        return render_template('dashboard.html')
-    except:
-        return redirect(url_for('login_page'))
+    return render_template('dashboard.html')
+
+def get_secure_filename(filename):
+    # 分离文件名和扩展名
+    name, ext = os.path.splitext(filename)
+    if not ext:
+        return None, None
+        
+    # 处理文件名，保留扩展名
+    secure_name = secure_filename(name)
+    # 如果文件名被完全过滤掉了，使用时间戳作为文件名
+    if not secure_name:
+        secure_name = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # 返回安全的文件名和原始扩展名
+    return secure_name, ext.lower()[1:]  # 移除扩展名中的点
 
 @app.route('/upload', methods=['POST'])
 @jwt_required()
 def upload_file():
     try:
         if 'file' not in request.files:
+            print("错误：请求中没有文件")
             return jsonify({'error': '没有文件被上传'}), 400
             
         file = request.files['file']
         if not file or not file.filename:
+            print("错误：文件名为空")
             return jsonify({'error': '没有选择文件'}), 400
-            
-        if not allowed_file(file.filename):
-            return jsonify({'error': '不支持的文件格式'}), 400
 
-        # 确保上传目录存在
-        if not os.path.exists(UPLOAD_FOLDER):
-            os.makedirs(UPLOAD_FOLDER)
-
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
+        # 打印原始文件名用于调试
+        print(f"原始文件名: {file.filename}")
         
+        # 处理文件名
+        secure_name, file_extension = get_secure_filename(file.filename)
+        if not secure_name or not file_extension:
+            print("错误：无效的文件名或扩展名")
+            return jsonify({'error': '无效的文件名或扩展名'}), 400
+            
+        print(f"处理后的文件名: {secure_name}")
+        print(f"文件扩展名: {file_extension}")
+        
+        # 验证文件类型
+        if file_extension not in ALLOWED_EXTENSIONS:
+            print(f"错误：不支持的文件格式 {file_extension}")
+            return jsonify({'error': f'不支持的文件格式: {file_extension}'}), 400
+
+        # 获取当前用户ID
+        current_user_id = get_jwt_identity()
+            
+        # 生成完整的文件名
+        full_filename = f"{secure_name}_{str(uuid.uuid4())[:8]}.{file_extension}"
+        file_path = os.path.join(UPLOAD_FOLDER, full_filename)
+        
+        # 保存文件
+        file.save(file_path)
+        print(f"文件已保存到: {file_path}")
+
         try:
-            # 读取文档内容
-            text_content = read_document(file_path)
-            
-            def generate():
-                client = Client(host='http://localhost:11434')
-                system_prompt = f"""
-                You are a powerful AI assistant capable of reading text content and summarizing it. The purpose of the summary is to help users grasp the key points without reading the entire article.
+            # 读取文件内容
+            text = ''
+            if file_extension == 'pdf':
+                text = read_pdf(file_path)
+            elif file_extension == 'docx':
+                text = read_docx(file_path)
+            elif file_extension == 'txt':
+                text = read_txt(file_path)
+            elif file_extension == 'md':
+                text = read_md(file_path)
+            elif file_extension == 'epub':
+                text = read_epub(file_path)
+            else:
+                raise ValueError(f'不支持的文件格式: {file_extension}')
 
-                [INSTRUCTIONS]
-                - Write a concise summary within 800 characters, capturing the essence of the article in one sentence;
-                - Outline the article in up to 10 points, with each point being less than 120 characters;
-                - Utilize only factual information from the original text. Refrain from fabricating content;
-                - Please use Arabic numerals for point numbering;
-                - Before finalizing, check the word count to ensure it is within the length limitation;
-                - If the text exceeds the length limitation, trim redundant parts;
-                - Do not use markdown format;
-                - Please confirm the specific input language, and the output will also be in the corresponding language;
+            if not text.strip():
+                raise ValueError('文件内容为空')
 
-                <OUTPUT_FORMAT_1>
-                This is an example summary.
-                1.Point one.[P2]
-                2.Point two.[P2, P3]
-                ...
-                </OUTPUT_FORMAT_1>
-
-                <OUTPUT_FORMAT_2>
-                这是一个示例总结。
-                1.要点一。[P1]
-                2.要点二。[P1, P2, P3]
-                ...
-                </OUTPUT_FORMAT_2>
-
-                ARTICLE_TO_SUMMARY:
-                <ARTICLE>
-                {text_content}
-                </ARTICLE>
-
-                **Note:**
-                1.Please repeatedly check and confirm that the page numbers in the output match the page numbers in the input. 
-                2.Note that the summary should not be marked with page numbers, but each core event needs to be marked with page numbers.
-                3.Please re-check, if you do not meet the above three points, please revise it immediately
-                """                
-                response = client.generate(
-                    model='qwen2.5:0.5b',
-                    prompt=system_prompt,
-                    stream=True
-                )
-                
-                for chunk in response:
-                    if chunk and 'response' in chunk:
-                        yield chunk['response']
-            
-            return Response(
-                stream_with_context(generate()),
-                mimetype='text/plain',
-                headers={
-                    'X-Accel-Buffering': 'no',
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive'
+            # 调用 AI 处理并获取响应
+            client = Client(host='http://localhost:11434')
+            response = client.chat(model='qwen2.5:3b', messages=[
+                {
+                    'role': 'user',
+                    'content': f'请为以下文本生成一个详细的摘要：\n\n{text}'
                 }
-            )
+            ])
+
+            if not response or 'message' not in response:
+                raise ValueError('AI 处理失败')
+
+            # 确保内容是 UTF-8 编码的字符串
+            content = response['message']['content']
             
+            # 使用 make_response 和 jsonify 来设置正确的响应头
+            resp = make_response(jsonify({
+                'success': True,
+                'content': content
+            }))
+            
+            # 设置响应头
+            resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+            return resp
+
         finally:
-            # 清理上传的文件
+            # 清理临时文件
             if os.path.exists(file_path):
                 os.remove(file_path)
-                
+                print(f"临时文件已删除: {file_path}")
+
     except Exception as e:
         print(f"处理文件错误: {str(e)}")
-        return jsonify({'error': f'上传处理失败: {str(e)}'}), 500
-
-# 会话管理API
-@app.route('/api/new-session', methods=['POST'])
-def new_session():
-    session_id = str(uuid.uuid4())
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        cursor.execute(
-            "INSERT INTO sessions (id, title) VALUES (%s, %s)",
-            (session_id, '新的对话')
-        )
-        conn.commit()
-        
-        return jsonify({
-            'id': session_id,
-            'title': '新的对话',
-            'messages': []
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        error_resp = make_response(jsonify({
+            'error': str(e),
+            'success': False
+        }))
+        error_resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+        return error_resp, 500
     finally:
-        cursor.close()
-        conn.close()
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
-@app.route('/api/chat-history')
-def get_chat_history():
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        cursor.execute("""
-            SELECT s.*, 
-                   COUNT(m.id) as message_count,
-                   MAX(m.created_at) as last_message_time
-            FROM sessions s
-            LEFT JOIN messages m ON s.id = m.session_id
-            GROUP BY s.id
-            ORDER BY COALESCE(MAX(m.created_at), s.created_at) DESC
-            LIMIT 50
-        """)
-        sessions = cursor.fetchall()
-        
-        # 转换datetime对象为字符串
-        for session in sessions:
-            if session['last_message_time']:
-                session['last_message_time'] = session['last_message_time'].strftime('%Y-%m-%d %H:%M:%S')
-        
-        return jsonify(sessions)
-    except Exception as e:
-        print(f"获取聊天历史错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/chat-session/<session_id>')
-def get_session(session_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        # 获取会话信息
-        cursor.execute("""
-            SELECT s.*, 
-                   COUNT(m.id) as message_count,
-                   MAX(m.created_at) as last_message_time
-            FROM sessions s
-            LEFT JOIN messages m ON s.id = m.session_id
-            WHERE s.id = %s
-            GROUP BY s.id
-        """, (session_id,))
-        session = cursor.fetchone()
-        
-        if not session:
-            return jsonify({'error': '会话不存在'}), 404
-        
-        # 获取会话的所有消息
-        cursor.execute(
-            "SELECT * FROM messages WHERE session_id = %s ORDER BY created_at",
-            (session_id,)
-        )
-        messages = cursor.fetchall()
-        
-        # 转换datetime对象为字符串
-        for message in messages:
-            if message['created_at']:
-                message['created_at'] = message['created_at'].strftime('%Y-%m-%d %H:%M:%S')
-        
-        session['messages'] = messages
-        return jsonify(session)
-    except Exception as e:
-        print(f"获取会话详情错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/save-message', methods=['POST'])
-@jwt_required()
-def save_message():
-    try:
-        current_user = get_jwt_identity()
-        data = request.json
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO messages (user_id, session_id, content, is_user)
-            VALUES (%s, %s, %s, %s)
-        ''', (current_user, data['sessionId'], data['content'], data['isUser']))
-        
-        conn.commit()
-        return jsonify({'message': '消息保存成功'})
-    except Exception as e:
-        print(f"保存消息错误: {str(e)}")
-        return jsonify({'error': '保存消息失败'}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-# 获取会话历史消息
-@app.route('/api/messages/<session_id>', methods=['GET'])
-@jwt_required()
-def get_session_messages(session_id):
-    try:
-        current_user = get_jwt_identity()
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        
-        cursor.execute('''
-            SELECT * FROM messages 
-            WHERE user_id = %s AND session_id = %s 
-            ORDER BY created_at ASC
-        ''', (current_user, session_id))
-        
-        messages = cursor.fetchall()
-        return jsonify(messages)
-    except Exception as e:
-        print(f"获取消息错误: {str(e)}")
-        return jsonify({'error': '获取消息失败'}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/update-session-title', methods=['POST'])
-def update_session_title():
-    data = request.json
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
-    try:
-        cursor.execute(
-            "UPDATE sessions SET title = %s WHERE id = %s",
-            (data['title'], data['sessionId'])
-        )
-        conn.commit()
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/delete-session/<session_id>', methods=['DELETE'])
-def delete_session(session_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # 首先删除会话的所有消息
-        cursor.execute("DELETE FROM messages WHERE session_id = %s", (session_id,))
-        # 然后删除会话
-        cursor.execute("DELETE FROM sessions WHERE id = %s", (session_id,))
-        conn.commit()
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
 
 # 错误处理
 @app.errorhandler(Exception)
@@ -672,7 +534,7 @@ def logout():
     # 前端需要清除 token
     return jsonify({'message': '注销成功'})
 
-# 获取用户信息
+# 获取用户信
 @app.route('/api/user/profile')
 def get_user_profile():
     token = request.headers.get('Authorization')
@@ -862,7 +724,18 @@ def simple_auth_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# 保存摘要记录
+# 添加新的数据模型相关代码
+class DocumentStatus:
+    PENDING = 'pending'
+    COMPLETED = 'completed'
+    FAILED = 'failed'
+
+# 修改摘要库页面路由，移除强制认证
+@app.route('/summaries')
+def summaries_page():
+    return render_template('summaries.html')
+
+# 修改保存摘要的路由
 @app.route('/api/save-summary', methods=['POST'])
 @jwt_required()
 def save_summary():
@@ -871,38 +744,165 @@ def save_summary():
         data = request.json
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # 添加更多字段以支持文档管理功能
         cursor.execute('''
-            INSERT INTO summaries (user_id, file_name, content, created_at)
-            VALUES (%s, %s, %s, NOW())
-        ''', (current_user, data['file_name'], data['content']))
+            INSERT INTO summaries (
+                user_id, 
+                file_name, 
+                file_type,
+                content, 
+                status,
+                is_opened,
+                created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        ''', (
+            current_user,
+            data['file_name'],
+            data['file_type'],
+            data['content'],
+            DocumentStatus.COMPLETED,
+            False
+        ))
+        
+        summary_id = cursor.lastrowid
         conn.commit()
-        conn.close()
-        return jsonify({'message': '保存成功'})
+        
+        return jsonify({
+            'message': '保存成功',
+            'summary_id': summary_id
+        })
+        
     except Exception as e:
-        print(f"发生错误: {str(e)}")
+        print(f"保存摘要错误: {str(e)}")
         return jsonify({'error': '保存失败'}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
-# 获取用户的摘要历史
+# 修改获取摘要列表的API，优化认证处理
 @app.route('/api/summaries', methods=['GET'])
-@jwt_required()
 def get_summaries():
+    try:
+        token = request.headers.get('Authorization')
+        if not token or not token.startswith('Bearer '):
+            return jsonify([])  # 如果没有token，返回空列表而不是错误
+            
+        # 解析token获取用户ID
+        try:
+            payload = jwt.decode(token.split(' ')[1], app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user = payload['sub']  # JWT标准使用'sub'存用户ID
+        except:
+            return jsonify([])  # token无效时返回空列表
+            
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute('''
+            SELECT 
+                id,
+                file_name,
+                file_type,
+                content,
+                status,
+                is_opened,
+                created_at
+            FROM summaries 
+            WHERE user_id = %s 
+            ORDER BY created_at DESC
+        ''', (current_user,))
+        
+        summaries = cursor.fetchall()
+        
+        # 格式化日期时间
+        for summary in summaries:
+            if summary['created_at']:
+                summary['created_at'] = summary['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        return jsonify(summaries)
+        
+    except Exception as e:
+        print(f"获取摘要列表错误: {str(e)}")
+        return jsonify([])  # 发生错误时返回空列表
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+# 获取单个摘要详情
+@app.route('/api/summaries/<int:summary_id>', methods=['GET'])
+@jwt_required()
+def get_summary(summary_id):
+    try:
+        current_user = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute('''
+            SELECT * FROM summaries 
+            WHERE id = %s AND user_id = %s
+        ''', (summary_id, current_user))
+        
+        summary = cursor.fetchone()
+        
+        if not summary:
+            return jsonify({'error': '摘要不存在'}), 404
+            
+        # 更新打开状态
+        cursor.execute('''
+            UPDATE summaries 
+            SET is_opened = TRUE 
+            WHERE id = %s
+        ''', (summary_id,))
+        
+        conn.commit()
+        
+        if summary['created_at']:
+            summary['created_at'] = summary['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        return jsonify(summary)
+        
+    except Exception as e:
+        print(f"获取摘要详情错误: {str(e)}")
+        return jsonify({'error': '获取摘要详情失败'}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+# 删除摘要
+@app.route('/api/summaries/<int:summary_id>', methods=['DELETE'])
+@jwt_required()
+def delete_summary(summary_id):
     try:
         current_user = get_jwt_identity()
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM summaries WHERE user_id = %s', (current_user,))
-        summaries = cursor.fetchall()
-        conn.close()
         
-        return jsonify([{
-            'id': s[0],
-            'file_name': s[2],
-            'content': s[3],
-            'created_at': s[4]
-        } for s in summaries])
+        cursor.execute('''
+            DELETE FROM summaries 
+            WHERE id = %s AND user_id = %s
+        ''', (summary_id, current_user))
+        
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            return jsonify({'error': '摘要不存在或无权限删除'}), 404
+            
+        return jsonify({'message': '删除成功'})
+        
     except Exception as e:
-        print(f"发生错误: {str(e)}")
-        return jsonify({'error': '获取摘要历史失败'}), 500
+        print(f"删除摘要错误: {str(e)}")
+        return jsonify({'error': '删除摘要失败'}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
 # 初始化管理员账户的函数
 def init_admin():

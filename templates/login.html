@@ -143,38 +143,34 @@
         const errorMessage = document.getElementById('errorMessage');
         const errorText = document.getElementById('errorText');
 
-        loginForm.onsubmit = async (e) => {
+        loginForm.onsubmit = async function(e) {
             e.preventDefault();
-            errorMessage.style.display = 'none';
-            
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
             
             try {
                 const response = await fetch('/api/login', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ username, password })
+                    body: JSON.stringify({
+                        username: document.getElementById('username').value,
+                        password: document.getElementById('password').value
+                    })
                 });
-
+                
                 const data = await response.json();
                 
                 if (response.ok) {
-                    // 保存 token
+                    // 保存 token 到 localStorage
                     localStorage.setItem('token', data.token);
-                    // 保存用户信息
-                    localStorage.setItem('user', JSON.stringify(data.user));
-                    // 直接重定向到首页
-                    window.location.replace('/');
+                    // 跳转到主页
+                    window.location.href = '/';
                 } else {
-                    throw new Error(data.error || '登录失败');
+                    showError(data.error || '登录失败');
                 }
             } catch (error) {
-                errorText.textContent = error.message;
-                errorMessage.style.display = 'block';
-                errorMessage.scrollIntoView({ behavior: 'smooth' });
+                console.error('登录错误:', error);
+                showError('登录失败，请重试');
             }
         };
     </script>

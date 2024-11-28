@@ -14,18 +14,35 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
--- 摘要表
-CREATE TABLE IF NOT EXISTS summaries (
+-- 文档摘要表
+CREATE TABLE IF NOT EXISTS document_summaries (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    user_id VARCHAR(36) NOT NULL,
     file_name VARCHAR(255) NOT NULL,
-    file_type VARCHAR(50) NOT NULL,
+    file_hash VARCHAR(64) NOT NULL UNIQUE,
+    summary_text TEXT NOT NULL,
+    summary_length VARCHAR(50),
+    target_language VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- 收藏表
+CREATE TABLE IF NOT EXISTS favorites (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    message_id VARCHAR(36) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- 消息表
+CREATE TABLE IF NOT EXISTS messages (
+    id VARCHAR(36) PRIMARY KEY,
     content TEXT NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    is_opened BOOLEAN DEFAULT FALSE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 创建索引
-CREATE INDEX idx_summaries_user_id ON summaries(user_id);
+CREATE INDEX idx_document_summaries_file_hash ON document_summaries(file_hash);
+CREATE INDEX idx_favorites_user_id ON favorites(user_id);
+CREATE INDEX idx_favorites_message_id ON favorites(message_id);

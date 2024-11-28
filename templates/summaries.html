@@ -98,6 +98,45 @@
         .btn-custom:hover {
             transform: translateY(-1px);
         }
+
+        .markdown-body {
+            box-sizing: border-box;
+            min-width: 200px;
+            max-width: 100%;
+            padding: 15px;
+            background-color: white;
+            border-radius: 8px;
+        }
+
+        .markdown-body h1 {
+            padding-bottom: 0.3em;
+            font-size: 2em;
+            border-bottom: 1px solid #eaecef;
+            margin-top: 0;
+        }
+
+        .markdown-body h2 {
+            padding-bottom: 0.3em;
+            font-size: 1.5em;
+            border-bottom: 1px solid #eaecef;
+        }
+
+        .markdown-body ul {
+            padding-left: 2em;
+        }
+
+        .markdown-body pre {
+            padding: 16px;
+            overflow: auto;
+            font-size: 85%;
+            line-height: 1.45;
+            background-color: #f6f8fa;
+            border-radius: 6px;
+        }
+
+        .modal-lg {
+            max-width: 900px;
+        }
     </style>
 </head>
 <body>
@@ -162,7 +201,7 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <div id="summaryDetail"></div>
+                    <div id="summaryDetail" class="markdown-body"></div>
                 </div>
             </div>
         </div>
@@ -185,29 +224,10 @@
         // 加载摘要列表
         async function loadSummaries() {
             try {
-                const token = localStorage.getItem('token');
                 const container = document.getElementById('summariesContainer');
                 const emptyState = document.getElementById('emptyState');
 
-                // 如果没有token，显示空状态
-                if (!token) {
-                    emptyState.style.display = 'block';
-                    container.innerHTML = '';
-                    return;
-                }
-
-                const response = await fetch('/api/summaries', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                
-                if (!response.ok) {
-                    emptyState.style.display = 'block';
-                    container.innerHTML = '';
-                    return;
-                }
-
+                const response = await fetch('/summaries');
                 const summaries = await response.json();
 
                 if (!summaries || summaries.length === 0) {
@@ -223,15 +243,11 @@
                             <div class="card-body text-center">
                                 <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
                                 <h5 class="card-title text-truncate">${summary.file_name}</h5>
-                                <p class="card-text">
-                                    <span class="status-dot ${summary.is_opened ? 'opened' : 'unopened'}"></span>
-                                    ${summary.is_opened ? '已查看' : '未查看'}
-                                </p>
                                 <div class="summary-preview mb-3">
-                                    ${summary.content}
+                                    ${summary.summary_text}
                                 </div>
                                 <small class="text-muted">
-                                    <i class="bi bi-clock me-1"></i>${new Date(summary.created_at).toLocaleString()}
+                                    <i class="bi bi-clock me-1"></i>${summary.created_at}
                                 </small>
                             </div>
                         </div>
@@ -243,36 +259,56 @@
             }
         }
 
+        // 初始化 markdown-it
+        const md = window.markdownit({
+            html: true,
+            linkify: true,
+            typographer: true,
+            highlight: function (str, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(str, { language: lang }).value;
+                    } catch (__) {}
+                }
+                return ''; // 使用默认的转义
+            }
+        });
+
         // 显示摘要详情
         async function showSummaryDetail(summaryId) {
             try {
-                const token = localStorage.getItem('token');
-                const response = await fetch(`/api/summaries/${summaryId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
+                const response = await fetch(`/summaries/${summaryId}`);
                 if (!response.ok) {
                     throw new Error('获取摘要详情失败');
                 }
 
                 const summary = await response.json();
                 const detailContainer = document.getElementById('summaryDetail');
-                detailContainer.innerHTML = `
-                    <div class="mb-3">
-                        <h4>${summary.file_name}</h4>
-                        <small class="text-muted">创建时间：${summary.created_at}</small>
-                    </div>
-                    <div class="mb-3">
-                        <pre class="bg-light p-3 rounded">${summary.content}</pre>
-                    </div>
-                    <div class="text-end">
-                        <button class="btn btn-danger" onclick="deleteSummary(${summary.id})">
-                            删除摘要
-                        </button>
-                    </div>
-                `;
+                
+                // 构建完整的 markdown 内容
+                const markdownContent = `
+# ${summary.file_name}
+
+**创建时间：** ${summary.created_at}
+**摘要长度：** ${summary.summary_length}
+**目标语言：** ${summary.target_language}
+
+---
+
+${summary.summary_text}
+
+---
+
+*文档ID：${summary.id}*
+`;
+                
+                // 使用 markdown-it 渲染内容
+                detailContainer.innerHTML = md.render(markdownContent);
+                
+                // 高亮代码块
+                detailContainer.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightBlock(block);
+                });
 
                 const modal = new bootstrap.Modal(document.getElementById('summaryModal'));
                 modal.show();
@@ -289,12 +325,8 @@
             }
 
             try {
-                const token = localStorage.getItem('token');
-                const response = await fetch(`/api/summaries/${summaryId}`, {
-                    method: 'DELETE',
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
+                const response = await fetch(`/summaries/${summaryId}`, {
+                    method: 'DELETE'
                 });
 
                 if (!response.ok) {
@@ -311,58 +343,8 @@
             }
         }
 
-        // 页面加载时检查认证并加载摘要
-        document.addEventListener('DOMContentLoaded', async () => {
-            await loadSummaries();  // 直接加载摘要，不强制要求认证
-        });
-
-        // 添加到现有脚本的开头
-        async function checkAuth() {
-            const token = localStorage.getItem('token');
-            if (!token) {
-                window.location.href = '/login';
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/user', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-                
-                if (!response.ok) {
-                    throw new Error('认证失败');
-                }
-                
-                const data = await response.json();
-                document.getElementById('userInfo').textContent = data.username;
-                if (data.role === 'admin') {
-                    document.getElementById('adminLink').style.display = 'inline-block';
-                }
-                
-                return data;
-            } catch (error) {
-                console.error('认证错误:', error);
-                localStorage.removeItem('token');
-                window.location.href = '/login';
-            }
-        }
-
-        // 添加退出功能
-        document.getElementById('logoutBtn').onclick = async function() {
-            try {
-                await fetch('/api/logout', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('token')}`
-                    }
-                });
-            } finally {
-                localStorage.removeItem('token');
-                window.location.href = '/login';
-            }
-        };
+        // 页面加载时直接加载摘要
+        document.addEventListener('DOMContentLoaded', loadSummaries);
 
         // 搜索功能
         document.getElementById('searchInput').addEventListener('input', function(e) {

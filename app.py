@@ -157,7 +157,7 @@ def read_document(file_path):
 
 def ollama_text(input_text, params=None, file_info=None):
     try:
-        client = Client(host='http://52bae7eb.r8.cpolar.top')
+        client = Client(host='http://127.0.0.1:11434')#http://52bae7eb.r8.cpolar.top
         
         # 根据参数调整提示词
         summary_length_map = {
@@ -222,7 +222,7 @@ def ollama_text(input_text, params=None, file_info=None):
         
         def generate():
             response = client.generate(
-                model='qwen2.5:14b-instruct',
+                model='qwen2.5:1.5b-instruct',#qwen2.5:14b-instruct
                 prompt=system_prompt + content,
                 stream=True
             )

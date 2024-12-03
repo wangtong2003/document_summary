@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Markdown Demo</title>
+    <!-- 使用 CDN 链接确保可以直接运行 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        #content {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="content"></div>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const markdown = `
+# Markdown 演示
+
+这是一个简单的 Markdown 演示页面。
+
+## 功能特性
+
+- 支持标题
+- 支持列表
+- 支持**粗体**和*斜体*
+- 支持[链接](https://example.com)
+- 支持代码块
+
+\`\`\`javascript
+console.log('Hello, Markdown!');
+\`\`\`
+            `;
+            
+            document.getElementById('content').innerHTML = marked.parse(markdown);
+        });
+    </script>
+</body>
+</html>

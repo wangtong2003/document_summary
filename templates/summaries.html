@@ -1,11 +1,12 @@
-<!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文档摘要库</title>
+    
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
     <style>
         :root {
             --primary-color: #4A90E2;
@@ -208,7 +209,46 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
     <script>
+        // 初始化 markdown-it
+        const md = window.markdownit({
+            html: true,
+            linkify: true,
+            highlight: function (str, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(str, { language: lang }).value;
+                    } catch (__) {}
+                }
+                return ''; // 使用默认的转义
+            }
+        });
+
+        // 测试 API 连接
+        async function testAPI() {
+            try {
+                const response = await fetch('/summaries');
+                const data = await response.json();
+                console.log('API 测试结果:', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: Object.fromEntries(response.headers.entries()),
+                    data: data
+                });
+            } catch (error) {
+                console.error('API 测试失败:', error);
+            }
+        }
+
+        // 页面加载时测试 API
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('页面加载完成，开始测试 API...');
+            testAPI();
+            loadSummaries();
+        });
+
         // 获取文件类型对应的图标
         function getFileIcon(fileType) {
             const iconMap = {
@@ -224,97 +264,147 @@
         // 加载摘要列表
         async function loadSummaries() {
             try {
+                console.log('开始加载摘要列表...');
                 const container = document.getElementById('summariesContainer');
+                if (!container) {
+                    console.error('找不到摘要容器元素！');
+                    return;
+                }
                 const emptyState = document.getElementById('emptyState');
+                if (!emptyState) {
+                    console.error('找不到空状态元素！');
+                    return;
+                }
 
+                console.log('发送请求到 /summaries 接口...');
                 const response = await fetch('/summaries');
+                console.log('收到响应:', response);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
                 const summaries = await response.json();
+                console.log('解析到的摘要数据:', summaries);
 
-                if (!summaries || summaries.length === 0) {
+                if (!Array.isArray(summaries)) {
+                    console.error('收到的数据不是数组格式:', summaries);
+                    throw new Error('Invalid data format');
+                }
+
+                if (summaries.length === 0) {
+                    console.log('没有找到摘要数据，显示空状态');
                     emptyState.style.display = 'block';
                     container.innerHTML = '';
                     return;
                 }
 
+                console.log(`找到 ${summaries.length} 条摘要数据，开始渲染...`);
                 emptyState.style.display = 'none';
-                container.innerHTML = summaries.map(summary => `
-                    <div class="col-md-4">
-                        <div class="card summary-card h-100" onclick="showSummaryDetail(${summary.id})">
-                            <div class="card-body text-center">
-                                <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
-                                <h5 class="card-title text-truncate">${summary.file_name}</h5>
-                                <div class="summary-preview mb-3">
-                                    ${summary.summary_text}
+                
+                const html = summaries.map(summary => {
+                    console.log('正在渲染摘要:', summary);
+                    if (!summary || !summary.id) {
+                        console.error('无效的摘要数据:', summary);
+                        return '';
+                    }
+                    return `
+                        <div class="col-md-4 mb-4">
+                            <div class="card summary-card h-100" onclick="showSummaryDetail(${summary.id})">
+                                <div class="card-body text-center">
+                                    <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
+                                    <h5 class="card-title text-truncate">${summary.file_name || '未命名文档'}</h5>
+                                    <div class="summary-preview mb-3">
+                                        ${summary.summary_text || '无摘要内容'}
+                                    </div>
+                                    <div class="text-muted">
+                                        <small class="me-2">
+                                            <i class="bi bi-clock me-1"></i>${summary.created_at || '未知时间'}
+                                        </small>
+                                        <small class="me-2">
+                                            <i class="bi bi-translate me-1"></i>${summary.target_language || '未指定语言'}
+                                        </small>
+                                        <small>
+                                            <i class="bi bi-text-paragraph me-1"></i>${summary.summary_length || '未指定长度'}
+                                        </small>
+                                    </div>
                                 </div>
-                                <small class="text-muted">
-                                    <i class="bi bi-clock me-1"></i>${summary.created_at}
-                                </small>
                             </div>
                         </div>
-                    </div>
-                `).join('');
+                    `;
+                }).join('');
+                
+                console.log('生成的 HTML:', html);
+                container.innerHTML = html;
+                console.log('渲染完成');
             } catch (error) {
-                console.error('Error:', error);
-                document.getElementById('emptyState').style.display = 'block';
+                console.error('加载摘要列表时出错:', error);
+                if (emptyState) {
+                    emptyState.style.display = 'block';
+                    emptyState.innerHTML = `
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <h4>加载失败</h4>
+                        <p class="text-muted">加载摘要列表时出现错误: ${error.message}</p>
+                        <button onclick="loadSummaries()" class="btn btn-primary btn-custom">
+                            <i class="bi bi-arrow-clockwise"></i> 重试
+                        </button>
+                    `;
+                }
             }
         }
-
-        // 初始化 markdown-it
-        const md = window.markdownit({
-            html: true,
-            linkify: true,
-            typographer: true,
-            highlight: function (str, lang) {
-                if (lang && hljs.getLanguage(lang)) {
-                    try {
-                        return hljs.highlight(str, { language: lang }).value;
-                    } catch (__) {}
-                }
-                return ''; // 使用默认的转义
-            }
-        });
 
         // 显示摘要详情
         async function showSummaryDetail(summaryId) {
             try {
+                console.log(`获取摘要详情 ID: ${summaryId}`);
                 const response = await fetch(`/summaries/${summaryId}`);
+                console.log('收到响应:', response);
+                
                 if (!response.ok) {
-                    throw new Error('获取摘要详情失败');
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '获取摘要详情失败');
                 }
 
                 const summary = await response.json();
+                console.log('解析到的摘要详情:', summary);
+                
                 const detailContainer = document.getElementById('summaryDetail');
+                if (!detailContainer) {
+                    throw new Error('找不到摘要详情容器元素');
+                }
                 
                 // 构建完整的 markdown 内容
                 const markdownContent = `
-# ${summary.file_name}
+# ${summary.file_name || '未命名文档'}
 
-**创建时间：** ${summary.created_at}
-**摘要长度：** ${summary.summary_length}
-**目标语言：** ${summary.target_language}
+**创建时间：** ${summary.created_at || '未知时间'}
+**摘要长度：** ${summary.summary_length || '未指定'}
+**目标语言：** ${summary.target_language || '未指定'}
 
 ---
 
-${summary.summary_text}
+${summary.summary_text || '无摘要内容'}
 
 ---
 
 *文档ID：${summary.id}*
 `;
                 
-                // 使用 markdown-it 渲染内容
+                console.log('渲染 Markdown 内容...');
                 detailContainer.innerHTML = md.render(markdownContent);
                 
                 // 高亮代码块
                 detailContainer.querySelectorAll('pre code').forEach((block) => {
-                    hljs.highlightBlock(block);
+                    window.hljs.highlightBlock(block);
                 });
 
                 const modal = new bootstrap.Modal(document.getElementById('summaryModal'));
                 modal.show();
+                console.log('摘要详情显示完成');
             } catch (error) {
-                console.error('Error:', error);
-                alert('获取摘要详情失败');
+                console.error('获取摘要详情失败:', error);
+                const errorMessage = error.message || '获取摘要详情失败';
+                alert(errorMessage);
             }
         }
 
@@ -343,9 +433,6 @@ ${summary.summary_text}
             }
         }
 
-        // 页面加载时直接加载摘要
-        document.addEventListener('DOMContentLoaded', loadSummaries);
-
         // 搜索功能
         document.getElementById('searchInput').addEventListener('input', function(e) {
             const searchText = e.target.value.toLowerCase();
@@ -360,4 +447,4 @@ ${summary.summary_text}
         });
     </script>
 </body>
-</html> 
+</html>

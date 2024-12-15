@@ -9,6 +9,9 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.2.0/github-markdown.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it/dist/markdown-it.min.js"></script>
     <style>
         :root {
             --primary-color: #3b82f6;
@@ -51,9 +54,105 @@
             flex: 1;
             background-color: white;
             border-radius: 12px;
-            padding: 0.3rem;
+            padding: 1.5rem;
             overflow-y: auto;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        #chatBody {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            padding: 1rem;
+        }
+
+        .chat-message {
+            background-color: #f8fafc;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .markdown-body {
+            box-sizing: border-box;
+            min-width: 200px;
+            max-width: 100%;
+            padding: 1.5rem;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.8;
+        }
+
+        .markdown-body p {
+            margin: 1.2em 0;
+            line-height: 1.8;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+            margin-top: 1.5em;
+            margin-bottom: 1em;
+        }
+
+        .markdown-body ul, .markdown-body ol {
+            margin: 1em 0;
+            padding-left: 1.5em;
+        }
+
+        .markdown-body li {
+            margin: 0.5em 0;
+            line-height: 1.6;
+        }
+
+        .markdown-body pre {
+            margin: 1.2em 0;
+            padding: 1em;
+            background-color: #f8fafc;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+
+        .markdown-body code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9em;
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            background-color: #f3f4f6;
+        }
+
+        .markdown-body pre code {
+            display: block;
+            padding: 0;
+            background-color: transparent;
+            white-space: pre;
+            overflow-x: auto;
+            line-height: 1.6;
+        }
+
+        .markdown-body blockquote {
+            margin: 1.2em 0;
+            padding: 0.8em 1em;
+            border-left: 4px solid #3b82f6;
+            background-color: #f3f4f6;
+            color: #4b5563;
+            border-radius: 4px;
+        }
+
+        .markdown-body strong {
+            color: #1a56db;
+            font-weight: 600;
+        }
+
+        .markdown-body em {
+            color: #2563eb;
+            font-style: italic;
         }
 
         .upload-area {
@@ -114,41 +213,6 @@
             padding: 0.3rem;
             margin-bottom: 0.3rem;
             border: 1px solid #e5e7eb;
-        }
-
-        .markdown-body {
-            box-sizing: border-box;
-            min-width: 200px;
-            max-width: 100%;
-            padding: 15px;
-            background-color: white;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-
-        .markdown-body h1 {
-            padding-bottom: 0.3em;
-            font-size: 2em;
-            border-bottom: 1px solid #eaecef;
-        }
-
-        .markdown-body h2 {
-            padding-bottom: 0.3em;
-            font-size: 1.5em;
-            border-bottom: 1px solid #eaecef;
-        }
-
-        .markdown-body ul {
-            padding-left: 2em;
-        }
-
-        .markdown-body pre {
-            padding: 16px;
-            overflow: auto;
-            font-size: 85%;
-            line-height: 1.45;
-            background-color: #f6f8fa;
-            border-radius: 6px;
         }
 
         .nav-link {
@@ -376,32 +440,187 @@
             </form>
         </div>
         <div class="main-content">
-            <div id="chatBody"></div>
+            <div class="container-fluid p-4">
+                <div id="chatBody" class="markdown-content">
+                    <!-- 内容将通过JavaScript动态插入 -->
+                </div>
+            </div>
         </div>
     </div>
 
-    <input type="file" id="fileInput" accept=".pdf,.docx,.txt,.md,.epub" hidden>
+    <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.txt,.md,.epub" hidden>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // 配置 marked 选项
-            marked.setOptions({
-                renderer: new marked.Renderer(),
-                highlight: function(code, lang) {
-                    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-                    return hljs.highlight(code, { language }).value;
-                },
-                langPrefix: 'hljs language-',
-                pedantic: false,
-                gfm: true,
+            // 初始化 markdown-it
+            const md = window.markdownit({
+                html: true,
+                linkify: true,
                 breaks: true,
-                sanitize: false,
-                smartypants: false,
-                xhtml: false
+                typographer: true,
+                highlight: function (str, lang) {
+                    if (lang && hljs.getLanguage(lang)) {
+                        try {
+                            return hljs.highlight(str, { language: lang }).value;
+                        } catch (__) {}
+                    }
+                    return '';
+                }
             });
+
+            // 自定义渲染规则
+            const originalRender = md.render.bind(md);
+            md.render = function (src) {
+                // 预处理 markdown 内容
+                src = src
+                    .replace(/\n{3,}/g, '\n\n') // 规范化连续换行
+                    .replace(/```(\w+)?\n([\s\S]*?)```/g, function(match, lang, code) {
+                        return `\n\`\`\`${lang || ''}\n${code.trim()}\n\`\`\`\n`;
+                    })
+                    .replace(/\*\*(.*?)\*\*/g, '**$1**') // 保持加粗标记
+                    .replace(/`([^`]+)`/g, '`$1`'); // 保持行内代码标记
+
+                return originalRender(src);
+            };
+
+            // 更新处理流式响应的逻辑
+            async function handleStreamResponse(response) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let accumulatedText = '';
+                
+                // 清空现有内容
+                chatBody.innerHTML = '';
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'markdown-body';
+                chatBody.appendChild(messageDiv);
+
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    
+                    const text = decoder.decode(value);
+                    const lines = text.split('\n');
+                    
+                    lines.forEach(line => {
+                        if (line.startsWith('data: ')) {
+                            const content = line.slice(6);
+                            if (content) {
+                                accumulatedText += content;
+                                messageDiv.innerHTML = md.render(accumulatedText);
+                                
+                                // 应用代码高亮
+                                messageDiv.querySelectorAll('pre code').forEach((block) => {
+                                    hljs.highlightBlock(block);
+                                });
+                                
+                                // 自动滚动到底部
+                                chatBody.scrollTop = chatBody.scrollHeight;
+                            }
+                        }
+                    });
+                }
+            }
+
+            // 更新样式
+            const style = document.createElement('style');
+            style.textContent = `
+                .markdown-body {
+                    box-sizing: border-box;
+                    min-width: 200px;
+                    max-width: 100%;
+                    padding: 2rem;
+                    background-color: white;
+                    border-radius: 12px;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                }
+
+                .markdown-body h1 {
+                    padding-bottom: 0.3em;
+                    font-size: 2em;
+                    border-bottom: 1px solid #eaecef;
+                    margin-top: 0;
+                    color: #1a56db;
+                }
+
+                .markdown-body h2 {
+                    padding-bottom: 0.3em;
+                    font-size: 1.5em;
+                    border-bottom: 1px solid #eaecef;
+                    color: #2563eb;
+                    margin-top: 1.5em;
+                }
+
+                .markdown-body h3 {
+                    font-size: 1.25em;
+                    color: #3b82f6;
+                    margin-top: 1.5em;
+                }
+
+                .markdown-body p {
+                    margin: 1em 0;
+                    line-height: 1.8;
+                }
+
+                .markdown-body ul, .markdown-body ol {
+                    padding-left: 2em;
+                    margin: 1em 0;
+                }
+
+                .markdown-body li {
+                    margin: 0.5em 0;
+                }
+
+                .markdown-body pre {
+                    margin: 1em 0;
+                    padding: 1em;
+                    background-color: #f6f8fa;
+                    border-radius: 6px;
+                    overflow: auto;
+                }
+
+                .markdown-body code {
+                    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+                    font-size: 0.9em;
+                    padding: 0.2em 0.4em;
+                    background-color: rgba(27,31,35,0.05);
+                    border-radius: 3px;
+                }
+
+                .markdown-body pre code {
+                    padding: 0;
+                    font-size: 0.9em;
+                    color: #24292e;
+                    word-break: normal;
+                    white-space: pre;
+                    background: transparent;
+                    border: 0;
+                }
+
+                .markdown-body blockquote {
+                    margin: 1em 0;
+                    padding: 0 1em;
+                    color: #6a737d;
+                    border-left: 0.25em solid #dfe2e5;
+                }
+
+                .markdown-body strong {
+                    font-weight: 600;
+                    color: #1a56db;
+                }
+
+                .markdown-body hr {
+                    height: 0.25em;
+                    padding: 0;
+                    margin: 24px 0;
+                    background-color: #e1e4e8;
+                    border: 0;
+                }
+            `;
+            document.head.appendChild(style);
 
             const uploadArea = document.getElementById('uploadArea');
             const fileInput = document.getElementById('fileInput');
@@ -471,12 +690,12 @@
 
             // 检查文件类型
             function isAllowedFileType(file) {
-                const allowedTypes = ['.pdf', '.docx', '.txt', '.md', '.epub'];
+                const allowedTypes = ['.pdf', '.docx', '.doc', '.txt', '.md', '.epub'];
                 const extension = '.' + file.name.split('.').pop().toLowerCase();
                 return allowedTypes.includes(extension);
             }
 
-            // 添加表单提交处理
+            // 更新表单提交处理
             parameterForm.onsubmit = async function(e) {
                 e.preventDefault();
                 
@@ -501,45 +720,7 @@
                     });
 
                     if (response.ok) {
-                        const reader = response.body.getReader();
-                        const decoder = new TextDecoder();
-                        let accumulatedText = '';
-
-                        // 清空现有内容
-                        chatBody.innerHTML = '';
-                        
-                        // 创建一个固定的消息容器
-                        const messageDiv = document.createElement('div');
-                        messageDiv.className = 'markdown-body';
-                        chatBody.appendChild(messageDiv);
-
-                        while (true) {
-                            const {value, done} = await reader.read();
-                            if (done) break;
-                            
-                            const text = decoder.decode(value);
-                            const lines = text.split('\n');
-                            
-                            lines.forEach(line => {
-                                if (line.startsWith('data: ')) {
-                                    const content = line.slice(6);
-                                    if (content) {
-                                        accumulatedText += content;
-                                        
-                                        // 使用 marked 渲染 Markdown
-                                        messageDiv.innerHTML = marked.parse(accumulatedText);
-                                        
-                                        // 应用代码高亮
-                                        messageDiv.querySelectorAll('pre code').forEach((block) => {
-                                            hljs.highlightBlock(block);
-                                        });
-                                        
-                                        // 自动滚动到底部
-                                        chatBody.scrollTop = chatBody.scrollHeight;
-                                    }
-                                }
-                            });
-                        }
+                        await handleStreamResponse(response);
                     } else {
                         throw new Error('处理文档失败');
                     }

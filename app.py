@@ -21,6 +21,9 @@ from flask_jwt_extended import (
 import json
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+import shutil
+import requests
+import re
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -32,7 +35,7 @@ app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf-8'
 
 # MySQL配置
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:123456@localhost/doc_summary?charset=utf8mb4'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:20030221@localhost/doc_summary?charset=utf8mb4'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
@@ -40,77 +43,115 @@ db = SQLAlchemy(app)
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-# 添加 User 模型定义
+# 数据模型定义
 class User(db.Model):
     __tablename__ = 'users'
     
     id = db.Column(db.String(36), primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)
+    password = db.Column(db.String(120), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     role = db.Column(db.String(20), nullable=False, default='user')
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
-    def __repr__(self):
-        return f'<User {self.username}>'
-
-# 定义文档摘要模型
 class DocumentSummary(db.Model):
     __tablename__ = 'document_summaries'
     
     id = db.Column(db.Integer, primary_key=True)
     file_name = db.Column(db.String(255), nullable=False)
-    file_hash = db.Column(db.String(64), unique=True, nullable=False)  # 用于唯一标识文件
+    file_hash = db.Column(db.String(32), nullable=False)
     summary_text = db.Column(db.Text, nullable=False)
-    summary_length = db.Column(db.String(50))  # 摘要长度设置
-    target_language = db.Column(db.String(50))  # 目标语言
-    created_at = db.Column(db.DateTime, default=datetime.now)
-    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+    original_text = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    summary_length = db.Column(db.String(20))
+    target_language = db.Column(db.String(20))
 
 def save_summary_to_db(file_info, summary_text, params):
     """
     保存或更新文档摘要到MySQL
     """
     try:
-        # 检是否已存在相同文件的摘要
+        print("开始保存摘要到数据库...")
+        print(f"文件信息: {file_info}")
+        print(f"摘要长度: {len(summary_text) if summary_text else 0}")
+        print(f"参数: {params}")
+        
+        # 计算文件内容的MD5哈希值
+        import hashlib
+        file_hash = hashlib.md5(file_info["original_text"].encode('utf-8')).hexdigest()
+        
+        # 检查是否已存在相同文件的摘要
         existing_summary = DocumentSummary.query.filter_by(
-            file_hash=file_info["file_hash"]
+            file_hash=file_hash
         ).first()
         
         if existing_summary:
+            print(f"更新现有摘要 ID: {existing_summary.id}")
             # 更新现有摘要
             existing_summary.summary_text = summary_text
             existing_summary.summary_length = params.get("summary_length")
             existing_summary.target_language = params.get("target_language") 
             existing_summary.updated_at = datetime.now()
             db.session.commit()
+            print("摘要更新成功")
         else:
+            print("创建新摘要记录")
             # 创建新摘要记录
             new_summary = DocumentSummary(
                 file_name=file_info["filename"],
-                file_hash=file_info["file_hash"],
+                file_hash=file_hash,
                 summary_text=summary_text,
+                original_text=file_info["original_text"],
                 summary_length=params.get("summary_length"),
                 target_language=params.get("target_language")
             )
             db.session.add(new_summary)
             db.session.commit()
+            print("新摘要保存成功")
             
         return True
         
     except Exception as e:
-        print(f"保存摘要错误: {str(e)}")
+        print(f"保存摘要到数据库时出错: {str(e)}")
         db.session.rollback()
-        return False
+        raise e
 
 # 文档处理函数
 def read_pdf(file_path):
-    with open(file_path, 'rb') as file:
-        reader = PyPDF2.PdfReader(file)
-        text = ''
-        for page in reader.pages:
-            text += page.extract_text() or ''
-        return text
+    """读取PDF文件内容"""
+    try:
+        print(f"开始读取PDF文件: {file_path}")
+        text = ""
+        with open(file_path, 'rb') as file:
+            # 创建PDF文件阅读器对象
+            pdf_reader = PyPDF2.PdfReader(file)
+            
+            # 获取PDF文件页数
+            num_pages = len(pdf_reader.pages)
+            print(f"PDF文件共有 {num_pages} 页")
+            
+            # 遍历每一页并提取文本
+            for page_num in range(num_pages):
+                try:
+                    # 获取页面对象
+                    page = pdf_reader.pages[page_num]
+                    # 提取文本
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n\n"
+                    print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
+                except Exception as e:
+                    print(f"读取第 {page_num + 1} 页时出错: {str(e)}")
+                    continue
+            
+            if not text.strip():
+                raise Exception("未能从PDF中提取到任何文本")
+                
+            print(f"PDF文件读取完成，总共提取到 {len(text)} 个字符")
+            return text
+    except Exception as e:
+        print(f"读取PDF文件出错: {str(e)}")
+        raise Exception(f"读取PDF文件失败: {str(e)}")
 
 def read_docx(file_path):
     doc = Document(file_path)
@@ -144,7 +185,7 @@ def read_document(file_path):
     
     if file_extension == '.pdf':
         return read_pdf(file_path)
-    elif file_extension == '.docx':
+    elif file_extension in ['.docx', '.doc']:  # 同时支持 .docx 和 .doc
         return read_docx(file_path)
     elif file_extension == '.txt':
         return read_txt(file_path)
@@ -155,9 +196,55 @@ def read_document(file_path):
     else:
         raise ValueError("不支持的文件格式")
 
+def generate_summary(text):
+    """生成文档摘要"""
+    try:
+        print("开始生成摘要...")
+        print(f"输入文本长度: {len(text)} 字符")
+        
+        client = Client(host='http://localhost:11434')
+        
+        # 构建提示词
+        system_prompt = """You are a powerful AI assistant capable of reading text content and summarizing it. 
+        Please follow these basic requirements:
+
+        [BASIC REQUIREMENTS]
+        - Summary Length: 约500字
+        - Target Language: chinese
+
+        [INSTRUCTIONS]
+        - Generate a summary exactly matching the specified length;
+        - Write in chinese;
+        """
+        
+        content = f"""
+        ARTICLE_TO_SUMMARY:
+        <ARTICLE>
+        {text}
+        </ARTICLE>
+        """
+        
+        print("调用远程 Ollama API...")
+        response = client.generate(
+            model='qwen2.5:3b',
+            prompt=system_prompt + content,
+            stream=False
+        )
+        
+        if not response or 'response' not in response:
+            raise Exception("API 返回的数据格式不正确")
+            
+        summary = response['response']
+        print(f"成功生成摘要，长度: {len(summary)} 字符")
+        return summary
+        
+    except Exception as e:
+        print(f"生成摘要时发生错误: {str(e)}")
+        raise Exception(f"生成摘要失败: {str(e)}")
+
 def ollama_text(input_text, params=None, file_info=None):
     try:
-        client = Client(host='http://127.0.0.1:11434')#http://52bae7eb.r8.cpolar.top
+        client = Client(host='http://localhost:11434')
         
         # 根据参数调整提示词
         summary_length_map = {
@@ -174,62 +261,105 @@ def ollama_text(input_text, params=None, file_info=None):
         target_language = params.get('target_language', 'chinese')
         
         # 构建基础提示模板
-        system_prompt = f"""You are a powerful AI assistant capable of reading text content and summarizing it. 
-        Please follow these basic requirements:
+        system_prompt = f"""你是一个专业的文档摘要助手。请仔细阅读以下内容，并生成结构化摘要。
 
-        [BASIC REQUIREMENTS]
-        - Summary Length: {target_length}
-        - Target Language: {target_language}
+        [输出格式要求]
+        1. 使用标准Markdown格式
+        2. 每个段落之间要有空行
+        3. 代码块要使用独立的```标记并注明语言
+        4. 列表项要使用统一的缩进
+        5. 重要内容使用加粗标记
+        6. 专业术语使用行内代码标记
 
-        [INSTRUCTIONS]
-        - Generate a summary exactly matching the specified length ({target_length});
-        - Write in {target_language};
-        """
-        
-        # 根据可选参数添加额外指令
-        if 'summary_style' in params:
-            system_prompt += f"\n- Use {params['summary_style']} style;"
-            
-        if 'focus_area' in params:
-            system_prompt += f"\n- Focus on {params['focus_area']} aspects;"
-            
-        if 'expertise_level' in params:
-            system_prompt += f"\n- Match {params['expertise_level']} expertise level;"
-            
-        if 'language_style' in params:
-            system_prompt += f"\n- Use {params['language_style']} tone;"
-        
-        # 添加输出格式
-        system_prompt += """
-        
-        <OUTPUT_FORMAT>
-        总体概述：
-        [字数严格控制在{target_length}的整体总结]
+        [文档结构]
 
-        关键要点：
-        1. [要点一]
-        2. [要点二]
-        ...
-        </OUTPUT_FORMAT>
+        # 文档摘要分析
+
+        ## 主要任务
+
+        {input_text}
+
+        ## 详细分析
+
+        ### 1. 问题描述
+        - **问题背景**：xxx
+        - **问题现状**：xxx
+        - **解决目标**：xxx
+
+        ### 2. 解决方案
+        1. **方案一**：xxx
+           - 具体步骤
+           - 实现方法
+           - 关键代码
+
+        2. **方案二**：xxx
+           - 具体步骤
+           - 实现方法
+           - 关键代码
+
+        ### 3. 代码实现
+        ```python
+        # 示例代码
+        def example():
+            # 实现逻辑
+            pass
+        ```
+
+        ### 4. 注意事项
+        - 重要提示1
+        - 重要提示2
+        - 重要提示3
+
+        ## 总结要点
+        1. xxx
+        2. xxx
+        3. xxx
+
+        [注意事项]
+        1. 保持专业性和准确性
+        2. 突出文档的主要观点
+        3. 保持格式的一致性
+        4. 确保代码示例的完整性
+        5. 适当使用加粗和引用格式
+
+        [输出要求]
+        - 语言：{target_language}
+        - 长度：{target_length}
+        - 专业程度：{params.get('expertise_level', 'intermediate')}
+        - 风格：{params.get('language_style', 'neutral')}
         """
         
         content = f"""
-        ARTICLE_TO_SUMMARY:
-        <ARTICLE>
+        需要总结的文档内容：
+        <文档>
         {input_text}
-        </ARTICLE>
+        </文档>
         """
         
+        print("调用远程 Ollama API...")
+        response = client.generate(
+            model='qwen2.5:3b',
+            prompt=system_prompt + content,
+            stream=True
+        )
+        
         def generate():
-            response = client.generate(
-                model='qwen2.5:1.5b-instruct',#qwen2.5:14b-instruct
-                prompt=system_prompt + content,
-                stream=True
-            )
-            
+            complete_summary = []
             for chunk in response:
                 if chunk and 'response' in chunk:
-                    yield f"data: {chunk['response']}\n\n"
+                    chunk_text = chunk['response']
+                    complete_summary.append(chunk_text)
+                    yield f"data: {chunk_text}\n\n"
+            
+            # 在流式输出完成后，保存完整的摘要到数据库
+            if file_info:
+                with app.app_context():
+                    try:
+                        full_summary = ''.join(complete_summary)
+                        save_summary_to_db(file_info, full_summary, params)
+                        print("摘要保存成功")
+                    except Exception as e:
+                        print(f"保存摘要失败: {str(e)}")
                     
         return Response(
             stream_with_context(generate()),
@@ -245,210 +375,37 @@ def ollama_text(input_text, params=None, file_info=None):
         print(f"Ollama API错误: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-def allowed_file(filename):
-    if not filename or '.' not in filename:
-        print(f"文件名无效或没有扩展名: {filename}")
-        return False
-    
-    extension = filename.rsplit('.', 1)[1].lower()
-    is_allowed = extension in ALLOWED_EXTENSIONS
-    if not is_allowed:
-        print(f"不支持的文件扩展名: {extension}，支持的扩展名: {ALLOWED_EXTENSIONS}")
-    return is_allowed
+def init_admin():
+    """初始化管理员账户"""
+    try:
+        print("检查管理员账户...")
+        # 检查管理员是否已存在
+        admin = User.query.filter_by(username='admin').first()
+        
+        if not admin:
+            print("创建新的管理员账户...")
+            # 创建管理员账户
+            admin = User(
+                id=str(uuid.uuid4()),
+                username='admin',
+                password=generate_password_hash('admin'),
+                email='admin@example.com',
+                role='admin'
+            )
+            db.session.add(admin)
+            db.session.commit()
+            print("管理员账户创建成功")
+        else:
+            print("管理员账户已存在")
+    except Exception as e:
+        print(f"初始化管理员账户错误: {str(e)}")
+        db.session.rollback()
+        raise
 
 @app.route('/')
-def dashboard():
+def index():
+    """主页"""
     return render_template('dashboard.html')
-
-@app.route('/api/users', methods=['GET'])
-def get_users_list():
-    try:
-        users = User.query.all()
-        return jsonify([{
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'created_at': user.created_at
-        } for user in users])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# 用户注册
-@app.route('/api/register', methods=['POST'])
-def register():
-    data = request.json
-    
-    if data.get('username') == 'admin':
-        return jsonify({'error': '不允许使用此用户名'}), 400
-        
-    try:
-        # 检查用户名和邮箱
-        if User.query.filter_by(username=data['username']).first():
-            return jsonify({'error': '用户名已存在'}), 400
-            
-        if User.query.filter_by(email=data['email']).first():
-            return jsonify({'error': '邮箱已被注册'}), 400
-            
-        # 创建新用户
-        new_user = User(
-            id=str(uuid.uuid4()),
-            username=data['username'],
-            password=generate_password_hash(data['password']),
-            email=data['email'],
-            role='user'
-        )
-        
-        db.session.add(new_user)
-        db.session.commit()
-        
-        return jsonify({
-            'message': '注册成功',
-            'user': {
-                'id': new_user.id,
-                'username': new_user.username,
-                'email': new_user.email,
-                'role': new_user.role
-            }
-        })
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
-
-# 用户认证路由
-@app.route('/api/user')
-def get_user():
-    try:
-        current_user_id = get_jwt_identity()
-        user = db.session.get(User, current_user_id)
-        
-        if not user:
-            return jsonify({'error': '用户不存在'}), 404
-            
-        return jsonify({
-            'id': user.id,
-            'username': user.username,
-            'role': user.role,
-            'email': user.email
-        }), 200
-        
-    except Exception as e:
-        current_app.logger.error(f"获取用户信息错误: {str(e)}")
-        return jsonify({'error': '获取用户信息失败'}), 500
-
-# 登录路由
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'GET':
-        return render_template('login.html')
-    
-    if request.method == 'POST':
-        try:
-            data = request.get_json()
-            username = data.get('username')
-            password = data.get('password')
-            
-            # 简单验证 - 任何用户名密码都可以登录
-            return jsonify({
-                'user_id': '1',
-                'username': username,
-                'role': 'admin'
-            }), 200
-                
-        except Exception as e:
-            print(f"登录错误: {str(e)}")
-            return jsonify({'error': '登录失败'}), 500
-
-# 用户注销
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    try:
-        # 这里可以添加任何需要的清理操作
-        # 比如将token加入黑名单等
-        return jsonify({
-            'message': '注销成功',
-            'success': True
-        })
-    except Exception as e:
-        print(f"注销错误: {str(e)}")
-        return jsonify({
-            'error': '注销失败',
-            'success': False
-        }), 500
-
-# 获取用户信息
-@app.route('/api/user/profile')
-def get_user_profile():
-    try:
-        # 获取当前用户ID
-        current_user_id = get_jwt_identity()
-        
-        # 使用 SQLAlchemy 查询用户
-        user = User.query.get(current_user_id)
-        
-        if not user:
-            return jsonify({'error': '用户不存在'}), 404
-            
-        return jsonify({
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role
-        })
-    except Exception as e:
-        print(f"获取用户信息错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# 收藏消息
-@app.route('/api/favorites/add', methods=['POST'])
-def add_favorite():
-    try:
-        current_user_id = get_jwt_identity()
-        data = request.json
-        
-        # 创建新的收藏
-        new_favorite = Favorite(
-            user_id=current_user_id,
-            message_id=data['message_id']
-        )
-        
-        db.session.add(new_favorite)
-        db.session.commit()
-        
-        return jsonify({'message': '收藏成功'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
-
-# 获取收藏列表
-@app.route('/api/favorites')
-def get_favorites():
-    try:
-        # 获取当前用户ID
-        current_user_id = get_jwt_identity()
-        
-        # 使用 SQLAlchemy 查询收藏
-        favorites = db.session.query(
-            Favorite, Message
-        ).join(
-            Message, Favorite.message_id == Message.id
-        ).filter(
-            Favorite.user_id == current_user_id
-        ).order_by(
-            Favorite.created_at.desc()
-        ).all()
-        
-        return jsonify([{
-            'id': fav.Favorite.id,
-            'message_id': fav.Favorite.message_id,
-            'content': fav.Message.content,
-            'created_at': fav.Favorite.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            'message_date': fav.Message.created_at.strftime('%Y-%m-%d %H:%M:%S')
-        } for fav in favorites])
-        
-    except Exception as e:
-        print(f"获取收藏列表错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/login')
 def login_page():
@@ -458,75 +415,20 @@ def login_page():
 def register_page():
     return render_template('register.html')
 
-# 获取当前用户信息
-@app.route('/api/user')
-def get_current_user():
-    """获取当前用户信息"""
-    return jsonify({
-        'id': '1',
-        'username': 'admin',
-        'role': 'admin'
-    })
-
-# 用户管理页面路由
-@app.route('/admin/users')
-def admin_users():
-    return render_template('admin/users.html')
-
-# 获取用户列表 API
-@app.route('/api/users', methods=['GET'])
-def get_users():
-    try:
-        users = User.query.all()
-        return jsonify([{
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'created_at': user.created_at
-        } for user in users])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# 更新用户色 API
-@app.route('/api/users/<user_id>/role', methods=['PUT'])
-def update_user_role(user_id):
-    try:
-        data = request.get_json()
-        new_role = data.get('role')
-        
-        user = User.query.get_or_404(user_id)
-        user.role = new_role
-        db.session.commit()
-        
-        return jsonify({'message': '角色更新成功'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/favicon.ico')
-def favicon():
-    return '', 204  # 返回空响应，状态码204表示无容
-
-# 添加新的数据模型相关代码
-class DocumentStatus:
-    PENDING = 'pending'
-    COMPLETED = 'completed'
-    FAILED = 'failed'
-
-# 改摘要库页面路由
 @app.route('/summary_library')
 def summary_library():
     """渲染摘要库页面"""
-    return render_template('summaries.html')  # 使用 summaries.html 模板
+    return render_template('summaries.html')
 
-# 获取摘要列表路由
 @app.route('/summaries', methods=['GET'])
 def get_summaries():
-    """获取所有摘要史"""
+    """获取所有摘要列表"""
     try:
+        print("\n=== 开始获取摘要列表 ===")
         summaries = DocumentSummary.query.order_by(DocumentSummary.created_at.desc()).all()
-        return jsonify([{
+        print(f"查询到 {len(summaries)} 条摘要记录")
+        
+        result = [{
             'id': s.id,
             'file_name': s.file_name,
             'file_type': s.file_name.split('.')[-1] if '.' in s.file_name else 'unknown',
@@ -534,29 +436,41 @@ def get_summaries():
             'created_at': s.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'summary_length': s.summary_length,
             'target_language': s.target_language
-        } for s in summaries])
+        } for s in summaries]
+        
+        print(f"返回 {len(result)} 条摘要记录")
+        return jsonify(result)
+        
     except Exception as e:
         print(f"获取摘要列表错误: {str(e)}")
-        return jsonify([])
+        return jsonify({'error': str(e)}), 500
 
-# 获取单个摘要详情
 @app.route('/summaries/<int:summary_id>', methods=['GET'])
 def get_summary_detail(summary_id):
-    """获取个摘要详情"""
+    """获取单个摘要详情"""
     try:
-        summary = DocumentSummary.query.get_or_404(summary_id)
-        return jsonify({
+        print(f"\n=== 获取摘要详情 ID: {summary_id} ===")
+        summary = DocumentSummary.query.get(summary_id)
+        
+        if not summary:
+            print(f"未找到ID为 {summary_id} 的摘要")
+            return jsonify({'error': f'未找到ID为 {summary_id} 的摘要'}), 404
+            
+        result = {
             'id': summary.id,
             'file_name': summary.file_name,
             'summary_text': summary.summary_text,
+            'original_text': summary.original_text,
             'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'summary_length': summary.summary_length,
             'target_language': summary.target_language
-        })
+        }
+        return jsonify(result)
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 404
+        print(f"获取摘要详情错误: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
-# 删除摘要
 @app.route('/summaries/<int:summary_id>', methods=['DELETE'])
 def delete_summary(summary_id):
     """删除指定摘要"""
@@ -569,119 +483,104 @@ def delete_summary(summary_id):
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-# 初始化管理员账户的函数
-def init_admin():
-    """初始化管理员账户"""
-    try:
-        # 检查管理员是否已存在
-        admin = User.query.filter_by(username='admin').first()
-        
-        if not admin:
-            # 创建管理员账户
-            admin = User(
-                id=str(uuid.uuid4()),
-                username='admin',
-                password=generate_password_hash('admin'),
-                email='admin@example.com',
-                role='admin'
-            )
-            db.session.add(admin)
-            db.session.commit()
-            print("管理员账户创成功")
-    except Exception as e:
-        db.session.rollback()
-        print(f"初始化管理员账户误: {str(e)}")
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
 
-# 添加 Favorite 模型
-class Favorite(db.Model):
-    __tablename__ = 'favorites'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.String(36), db.ForeignKey('users.id'), nullable=False)
-    message_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+def sanitize_filename(filename):
+    """安全地处理文件名，保留中文字符"""
+    # 移除文件名中的特殊字符，但保留中文字符
+    name, ext = os.path.splitext(filename)
+    # 只保留中文、英文、数字和下划线
+    name = re.sub(r'[^\w\u4e00-\u9fff-]', '_', name)
+    # 确保文件名不为空
+    if not name:
+        name = 'document'
+    return name + ext
 
-# 添加 Message 模型
-class Message(db.Model):
-    __tablename__ = 'messages'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    content = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-# 修改文件处理路由
 @app.route('/process_document', methods=['POST'])
 def process_document():
+    """处理上传的文档并生成摘要"""
     try:
+        print("\n=== 开始处理文档 ===")
+        
+        # 检查是否有文件被上传
         if 'file' not in request.files:
-            print("没有文件被上传")
-            return jsonify({'error': '没有文件被上传'}), 400
+            return jsonify({'error': '没有上传文件'}), 400
             
         file = request.files['file']
-        if not file or not file.filename:
-            print("没有选择文件")
-            return jsonify({'error': '没有选择文件'}), 400
-        
-        print(f"接收到文件: {file.filename}")
+        if file.filename == '':
+            return jsonify({'error': '未选择文件'}), 400
             
-        if not allowed_file(file.filename):
-            print(f"不支持的文件格式: {file.filename}")
+        # 获取参数
+        params = {
+            'summary_length': request.form.get('summary_length', 'medium'),
+            'target_language': request.form.get('target_language', 'chinese'),
+            'summary_style': request.form.get('summary_style'),
+            'focus_area': request.form.get('focus_area'),
+            'expertise_level': request.form.get('expertise_level'),
+            'language_style': request.form.get('language_style')
+        }
+        
+        print(f"原始文件名: {file.filename}")
+        
+        # 使用自定义的sanitize_filename函数处理文件名
+        safe_filename = sanitize_filename(file.filename)
+        print(f"处理后的安全文件名: {safe_filename}")
+        
+        # 检查文件类型
+        if not allowed_file(safe_filename):
+            print(f"文件扩展名检查失败: {safe_filename}")
             return jsonify({'error': '不支持的文件格式'}), 400
-
-        # 安全地处理文件名
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        print(f"保存文件到: {file_path}")
+            
+        # 保存文件
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
+        print(f"文件保存路径: {file_path}")
         file.save(file_path)
-
-        # 读取文件内容
+        
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                text = f.read()
-            print(f"成功读取文件内容，长度: {len(text)}")
+            # 读取文档内容
+            text = read_document(file_path)
             
-            # 获取表单参数
-            params = {
-                'summary_length': request.form.get('summary_length', 'medium'),
-                'target_language': request.form.get('target_language', 'chinese')
-            }
-            
-            # 添加可选参数
-            optional_params = ['summary_style', 'focus_area', 'expertise_level', 'language_style']
-            for param in optional_params:
-                if param in request.form:
-                    params[param] = request.form[param]
-            
-            print(f"处理参数: {params}")  # 添加日志
-            
-            # 文件信息
+            # 准备文件信息
             file_info = {
-                'filename': filename,
-                'file_path': file_path
+                'filename': safe_filename,
+                'original_text': text
             }
-
-            # 调用 Ollama 处理文本
+            
+            # 生成摘要
             return ollama_text(text, params, file_info)
             
-        except Exception as e:
-            print(f"读取文件内容错误: {str(e)}")
-            raise
         finally:
-            # 处理完后删除文件
+            # 清理临时文件
             if os.path.exists(file_path):
                 os.remove(file_path)
-                print(f"删除临时文件: {file_path}")
-
+                
     except Exception as e:
-        print(f"处理文档错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        print(f"处理文档时发生错误: {str(e)}")
+        return jsonify({'error': f'处理文档失败: {str(e)}'}), 500
 
-# 在应用启动时初始化管理员账户
+def allowed_file(filename):
+    """检查文件扩展名是否允许"""
+    extension = os.path.splitext(filename)[1].lower()
+    print(f"检查文件扩展名: {extension}")
+    print(f"允许的扩展名: {ALLOWED_EXTENSIONS}")
+    return extension[1:] in ALLOWED_EXTENSIONS
+
 if __name__ == '__main__':
-    with app.app_context():
-        # 创建所有数据库表
-        db.create_all()
-        # 初始化管理员账户
-        init_admin()
-    app.run(debug=True, port=5000)
+    print("正在启动应用程序...")
+    try:
+        with app.app_context():
+            print("正在初始化数据库...")
+            # 创建所有数据库表
+            db.create_all()
+            print("数据库表创建成功")
+            # 初始化管理员账户
+            init_admin()
+            print("管理员账户初始化成功")
+        print("正在启动 Flask 服务器...")
+        app.run(debug=True, port=5000)
+    except Exception as e:
+        print(f"启动应用程序时出错: {str(e)}")
+        import traceback
+        print(traceback.format_exc())

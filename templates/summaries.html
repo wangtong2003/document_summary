@@ -170,9 +170,9 @@
             <h2 class="mb-0">我的文档摘要库</h2>
             <div class="d-flex gap-2">
                 <div class="input-group">
-                    <input type="text" class="form-control" id="searchInput" placeholder="搜索文档...">
-                    <button class="btn btn-outline-secondary" type="button">
-                        <i class="bi bi-search"></i>
+                    <input type="text" class="form-control" id="searchInput" placeholder="输入关键词进行智能检索...">
+                    <button class="btn btn-primary" type="button" id="searchButton">
+                        <i class="bi bi-search"></i> 智能检索
                     </button>
                 </div>
             </div>
@@ -433,17 +433,92 @@ ${summary.summary_text || '无摘要内容'}
             }
         }
 
-        // 搜索功能
-        document.getElementById('searchInput').addEventListener('input', function(e) {
-            const searchText = e.target.value.toLowerCase();
-            const cards = document.querySelectorAll('.summary-card');
-            
-            cards.forEach(card => {
-                const title = card.querySelector('.card-title').textContent.toLowerCase();
-                const content = card.querySelector('.summary-preview').textContent.toLowerCase();
-                const matches = title.includes(searchText) || content.includes(searchText);
-                card.closest('.col-md-4').style.display = matches ? 'block' : 'none';
-            });
+        // 更新搜索功能
+        async function performSearch(query) {
+            try {
+                console.log('执行智能检索:', query);
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '搜索失败');
+                }
+
+                const data = await response.json();
+                console.log('搜索结果:', data);
+
+                const container = document.getElementById('summariesContainer');
+                const emptyState = document.getElementById('emptyState');
+
+                if (!data.results || data.results.length === 0) {
+                    container.innerHTML = `
+                        <div class="col-12 text-center py-5">
+                            <i class="bi bi-search" style="font-size: 3rem; color: #dee2e6;"></i>
+                            <h4 class="mt-3">未找到相关结果</h4>
+                            <p class="text-muted">尝试使用其他关键词搜索</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const html = data.results.map(summary => `
+                    <div class="col-md-4 mb-4">
+                        <div class="card summary-card h-100" onclick="showSummaryDetail(${summary.id})">
+                            <div class="card-body text-center">
+                                <i class="bi ${getFileIcon(summary.file_name.split('.').pop())} file-icon"></i>
+                                <h5 class="card-title text-truncate">${summary.file_name}</h5>
+                                <div class="summary-preview mb-3">
+                                    ${summary.summary_text}
+                                </div>
+                                <div class="text-muted">
+                                    <small class="me-2">
+                                        <i class="bi bi-clock me-1"></i>${summary.created_at}
+                                    </small>
+                                    <small class="me-2">
+                                        <i class="bi bi-translate me-1"></i>${summary.target_language}
+                                    </small>
+                                    <small>
+                                        <i class="bi bi-text-paragraph me-1"></i>${summary.summary_length}
+                                    </small>
+                                </div>
+                                <div class="mt-2">
+                                    <span class="badge bg-primary">
+                                        相关度: ${(summary.similarity_score * 100).toFixed(1)}%
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+
+                container.innerHTML = html;
+            } catch (error) {
+                console.error('搜索错误:', error);
+                alert(error.message || '搜索过程中发生错误');
+            }
+        }
+
+        // 绑定搜索事件
+        document.getElementById('searchButton').addEventListener('click', function() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (query) {
+                performSearch(query);
+            }
+        });
+
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                const query = this.value.trim();
+                if (query) {
+                    performSearch(query);
+                }
+            }
         });
     </script>
 </body>

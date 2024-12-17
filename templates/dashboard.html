@@ -249,24 +249,29 @@
         }
 
         .markdown-content {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    font-size: 16px;
-    line-height: 1.6;
-    color: #374151;
-    overflow-wrap: break-word;
-    word-break: break-word;
-}
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-size: 16px;
+            line-height: 1.6;
+            color: #374151;
+            overflow-wrap: break-word;
+            word-break: break-word;
+            padding: 20px;
+        }
 
         .markdown-content h1 {
             font-size: 24px;
             margin: 24px 0 16px;
             font-weight: 600;
+            border-bottom: 1px solid #eaecef;
+            padding-bottom: 0.3em;
         }
 
         .markdown-content h2 {
             font-size: 20px;
             margin: 20px 0 16px;
             font-weight: 600;
+            border-bottom: 1px solid #eaecef;
+            padding-bottom: 0.3em;
         }
 
         .markdown-content h3 {
@@ -276,7 +281,8 @@
         }
 
         .markdown-content p {
-            margin: 0 0 1em 0;
+            margin: 0 0 16px 0;
+            line-height: 1.8;
         }
 
         .markdown-content ul,
@@ -287,6 +293,7 @@
 
         .markdown-content li {
             margin: 6px 0;
+            line-height: 1.6;
         }
 
         .markdown-content code {
@@ -300,9 +307,23 @@
         .markdown-content pre {
             margin: 16px 0;
             padding: 16px;
+            overflow: auto;
+            font-size: 85%;
+            line-height: 1.45;
             background-color: #f6f8fa;
             border-radius: 6px;
+        }
+
+        .markdown-content pre code {
+            display: block;
+            padding: 0;
+            margin: 0;
             overflow: auto;
+            font-size: inherit;
+            word-break: normal;
+            white-space: pre;
+            background: transparent;
+            border: 0;
         }
 
         .markdown-content blockquote {
@@ -310,6 +331,25 @@
             padding: 0 16px;
             color: #6b7280;
             border-left: 4px solid #e5e7eb;
+            background-color: #f8fafc;
+        }
+
+        .markdown-content strong {
+            font-weight: 600;
+            color: #1a56db;
+        }
+
+        .markdown-content em {
+            color: #4a5568;
+            font-style: italic;
+        }
+
+        .markdown-content hr {
+            height: 2px;
+            padding: 0;
+            margin: 24px 0;
+            background-color: #e5e7eb;
+            border: 0;
         }
     </style>
 </head>
@@ -495,7 +535,7 @@
                 // 清空现有内容
                 chatBody.innerHTML = '';
                 const messageDiv = document.createElement('div');
-                messageDiv.className = 'markdown-body';
+                messageDiv.className = 'markdown-content';
                 chatBody.appendChild(messageDiv);
 
                 while (true) {
@@ -510,6 +550,7 @@
                             const content = line.slice(6);
                             if (content) {
                                 accumulatedText += content;
+                                // 使用markdown-it渲染内容
                                 messageDiv.innerHTML = md.render(accumulatedText);
                                 
                                 // 应用代码高亮
@@ -536,14 +577,16 @@
                     background-color: white;
                     border-radius: 12px;
                     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                    line-height: 1.8;
                 }
 
                 .markdown-body h1 {
-                    padding-bottom: 0.3em;
+                    padding-bottom: 0.5em;
                     font-size: 2em;
                     border-bottom: 1px solid #eaecef;
                     margin-top: 0;
                     color: #1a56db;
+                    margin-bottom: 1em;
                 }
 
                 .markdown-body h2 {
@@ -552,33 +595,37 @@
                     border-bottom: 1px solid #eaecef;
                     color: #2563eb;
                     margin-top: 1.5em;
+                    margin-bottom: 1em;
                 }
 
                 .markdown-body h3 {
                     font-size: 1.25em;
                     color: #3b82f6;
                     margin-top: 1.5em;
+                    margin-bottom: 1em;
                 }
 
                 .markdown-body p {
-                    margin: 1em 0;
+                    margin: 1.2em 0;
                     line-height: 1.8;
+                    text-align: justify;
                 }
 
                 .markdown-body ul, .markdown-body ol {
                     padding-left: 2em;
-                    margin: 1em 0;
+                    margin: 1.2em 0;
                 }
 
                 .markdown-body li {
-                    margin: 0.5em 0;
+                    margin: 0.8em 0;
+                    line-height: 1.6;
                 }
 
                 .markdown-body pre {
-                    margin: 1em 0;
-                    padding: 1em;
+                    margin: 1.5em 0;
+                    padding: 1.5em;
                     background-color: #f6f8fa;
-                    border-radius: 6px;
+                    border-radius: 8px;
                     overflow: auto;
                 }
 
@@ -587,7 +634,7 @@
                     font-size: 0.9em;
                     padding: 0.2em 0.4em;
                     background-color: rgba(27,31,35,0.05);
-                    border-radius: 3px;
+                    border-radius: 4px;
                 }
 
                 .markdown-body pre code {
@@ -598,13 +645,16 @@
                     white-space: pre;
                     background: transparent;
                     border: 0;
+                    line-height: 1.6;
                 }
 
                 .markdown-body blockquote {
-                    margin: 1em 0;
-                    padding: 0 1em;
-                    color: #6a737d;
-                    border-left: 0.25em solid #dfe2e5;
+                    margin: 1.5em 0;
+                    padding: 1em 1.5em;
+                    color: #4a5568;
+                    border-left: 4px solid #3b82f6;
+                    background-color: #f8fafc;
+                    border-radius: 4px;
                 }
 
                 .markdown-body strong {
@@ -612,12 +662,39 @@
                     color: #1a56db;
                 }
 
+                .markdown-body em {
+                    color: #4a5568;
+                    font-style: italic;
+                }
+
                 .markdown-body hr {
-                    height: 0.25em;
+                    height: 2px;
                     padding: 0;
-                    margin: 24px 0;
-                    background-color: #e1e4e8;
+                    margin: 2em 0;
+                    background-color: #e5e7eb;
                     border: 0;
+                }
+
+                .markdown-body table {
+                    width: 100%;
+                    margin: 1.5em 0;
+                    border-collapse: collapse;
+                }
+
+                .markdown-body th, .markdown-body td {
+                    padding: 0.75em 1em;
+                    border: 1px solid #e5e7eb;
+                }
+
+                .markdown-body th {
+                    background-color: #f8fafc;
+                    font-weight: 600;
+                }
+
+                .markdown-body img {
+                    max-width: 100%;
+                    border-radius: 8px;
+                    margin: 1.5em 0;
                 }
             `;
             document.head.appendChild(style);
@@ -679,10 +756,25 @@
             // 文件选择处理函数
             function handleFileSelect(file) {
                 if (isAllowedFileType(file)) {
-                    fileInfo.textContent = `已选择文件: ${file.name}`;
+                    const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                    fileInfo.innerHTML = `
+                        <div class="alert alert-info">
+                            <i class="bi bi-file-earmark-text me-2"></i>
+                            <strong>已选择文件：</strong>${file.name}<br>
+                            <small class="text-muted">
+                                <i class="bi bi-hdd me-1"></i>文件大小：${fileSizeMB} MB
+                            </small>
+                        </div>
+                    `;
                     submitBtn.disabled = false;
                 } else {
-                    fileInfo.textContent = '不支持的文件格式';
+                    fileInfo.innerHTML = `
+                        <div class="alert alert-danger">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            <strong>不支持的文件格式</strong><br>
+                            <small class="text-muted">请选择 PDF、Word、TXT、Markdown 或 EPUB 文件</small>
+                        </div>
+                    `;
                     submitBtn.disabled = true;
                     fileInput.value = ''; // 清空选择
                 }
@@ -690,15 +782,35 @@
 
             // 检查文件类型
             function isAllowedFileType(file) {
-                const allowedTypes = ['.pdf', '.docx', '.doc', '.txt', '.md', '.epub'];
-                const extension = '.' + file.name.split('.').pop().toLowerCase();
-                return allowedTypes.includes(extension);
+                const allowedTypes = [
+                    'application/pdf',
+                    'application/msword',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'text/plain',
+                    'text/markdown',
+                    'application/epub+zip'
+                ];
+                const allowedExtensions = ['.pdf', '.doc', '.docx', '.txt', '.md', '.epub'];
+                
+                // 检查MIME类型
+                if (allowedTypes.includes(file.type)) {
+                    return true;
+                }
+                
+                // 检查文件扩展名（作为备用）
+                const fileName = file.name.toLowerCase();
+                return allowedExtensions.some(ext => fileName.endsWith(ext));
             }
 
             // 更新表单提交处理
             parameterForm.onsubmit = async function(e) {
                 e.preventDefault();
                 
+                if (!fileInput.files || !fileInput.files[0]) {
+                    alert('请先选择文件');
+                    return;
+                }
+
                 const formData = new FormData();
                 formData.append('file', fileInput.files[0]);
                 formData.append('summary_length', document.getElementById('summaryLength').value);
@@ -722,7 +834,8 @@
                     if (response.ok) {
                         await handleStreamResponse(response);
                     } else {
-                        throw new Error('处理文档失败');
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || '处理文档失败');
                     }
                 } catch (error) {
                     console.error('Error:', error);

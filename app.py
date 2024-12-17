@@ -24,6 +24,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import shutil
 import requests
 import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import jieba
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -566,6 +570,93 @@ def allowed_file(filename):
     print(f"检查文件扩展名: {extension}")
     print(f"允许的扩展名: {ALLOWED_EXTENSIONS}")
     return extension[1:] in ALLOWED_EXTENSIONS
+
+class ChineseTokenizer:
+    def __call__(self, text):
+        return list(jieba.cut(text))
+
+def search_summaries(query, summaries, top_k=5):
+    """
+    使用TF-IDF和余弦相似度进行智能检索
+    
+    Args:
+        query: 搜索查询
+        summaries: 摘要列表
+        top_k: 返回的最相关结果数量
+        
+    Returns:
+        最相关的文档列表，包含相似度分数
+    """
+    if not summaries:
+        return []
+        
+    # 准备文档集合
+    documents = [summary.summary_text for summary in summaries]
+    documents.append(query)  # 将查询添加到文档集合中
+    
+    # 创建TF-IDF向量化器，使用自定义的中文分词器
+    vectorizer = TfidfVectorizer(
+        tokenizer=ChineseTokenizer(),
+        stop_words='english',  # 移除英文停用词
+        max_features=5000  # 限制特征数量
+    )
+    
+    try:
+        # 转换文档为TF-IDF矩阵
+        tfidf_matrix = vectorizer.fit_transform(documents)
+        
+        # 计算查询（最后一个文档）与其他文档的余弦相似度
+        cosine_similarities = cosine_similarity(
+            tfidf_matrix[-1:], tfidf_matrix[:-1]
+        ).flatten()
+        
+        # 获取相似度最高的文档索引
+        top_indices = np.argsort(cosine_similarities)[::-1][:top_k]
+        
+        # 构建结果列表
+        results = []
+        for idx in top_indices:
+            if cosine_similarities[idx] > 0:  # 只返回相似度大于0的结果
+                summary = summaries[idx]
+                results.append({
+                    'id': summary.id,
+                    'file_name': summary.file_name,
+                    'summary_text': summary.summary_text,
+                    'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    'similarity_score': float(cosine_similarities[idx]),
+                    'summary_length': summary.summary_length,
+                    'target_language': summary.target_language
+                })
+        
+        return results
+    except Exception as e:
+        print(f"搜索过程中出错: {str(e)}")
+        return []
+
+@app.route('/api/search', methods=['POST'])
+def search_api():
+    """智能检索API端点"""
+    try:
+        data = request.get_json()
+        query = data.get('query', '').strip()
+        
+        if not query:
+            return jsonify({'error': '搜索查询不能为空'}), 400
+            
+        # 获取所有摘要
+        summaries = DocumentSummary.query.all()
+        
+        # 执行智能检索
+        results = search_summaries(query, summaries)
+        
+        return jsonify({
+            'results': results,
+            'total': len(results)
+        })
+        
+    except Exception as e:
+        print(f"搜索API错误: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     print("正在启动应用程序...")

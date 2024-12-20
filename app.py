@@ -1,7 +1,8 @@
 import pymysql
 pymysql.install_as_MySQLdb()
 
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session
+from flask_session import Session  # 添加 Flask-Session 导入
 import asyncio
 from ollama import Client
 import os
@@ -47,7 +48,7 @@ app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf8mb4'
 
 # MySQL配置
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:20030221@localhost/doc_summary?charset=utf8mb4'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:20030221@localhost/document_summary?charset=utf8mb4'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_size': 10,
@@ -57,24 +58,37 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'max_overflow': 5
 }
 
+# Session 配置
+app.config['SECRET_KEY'] = 'your-secret-key-here'  # 设置 session 密钥
+app.config['SESSION_TYPE'] = 'filesystem'  # 使用文件系统存储 session
+app.config['SESSION_FILE_DIR'] = 'flask_session'  # session 文件存储目录
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)  # session 有效期
+
+# 初始化 Flask-Session
+Session(app)
+
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)  # 初始化 Flask-Migrate
 
 # 创建必要的目录
-for folder in [UPLOAD_FOLDER, DOCUMENTS_FOLDER]:
+for folder in [UPLOAD_FOLDER, DOCUMENTS_FOLDER, 'flask_session']:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
 # 数据模型定义
 class User(db.Model):
+    """用户模型"""
     __tablename__ = 'users'
     
-    id = db.Column(db.String(36), primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)  # 添加自增属性
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     role = db.Column(db.String(20), nullable=False, default='user')
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+    
+    def __repr__(self):
+        return f'<User {self.username}>'
 
 class DocumentSummary(db.Model):
     __tablename__ = 'document_summaries'
@@ -280,7 +294,7 @@ def read_md(file_path):
                 return markdown.markdown(text)
             except UnicodeDecodeError:
                 continue
-        raise Exception("无法识别文件编码")
+        raise Exception("无法识别文编码")
 
 def read_epub(file_path):
     book = epub.read_epub(file_path)
@@ -367,7 +381,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
             'very_long': '约2000字'
         }
         
-        # 获参数
+        # 获参
         summary_length = params.get('summary_length', 'medium')
         target_length = summary_length_map.get(summary_length, '约500字')
         target_language = params.get('target_language', 'chinese')
@@ -378,7 +392,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         [出格式要求]
         1. 使用标准Markdown格式
         2. 个段落之间要有空行
-        3. 代码块要使用独立的```标并注明语言
+        3. 代码块要使用独的```标并注明语言
         4. 列表项要使用统一的缩进
         5. 重要内容使用加粗标记
         6. 专业术语使用行内代码标记
@@ -437,7 +451,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         [输出要求]
         - 语言：{target_language}
         - 长度：{target_length}
-        - 专业程度：{params.get('expertise_level', 'intermediate')}
+        - 业程度：{params.get('expertise_level', 'intermediate')}
         - 风格：{params.get('language_style', 'neutral')}
         """
         
@@ -474,7 +488,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
                         
                         save_result = save_summary_to_db(file_info, full_summary, params, file_content)
                         if save_result:
-                            print("摘要保存成功")
+                            print("摘要存成功")
                         else:
                             print("摘要保存失败")
                     except Exception as e:
@@ -497,31 +511,83 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
 def init_admin():
     """初始化管理员账户"""
     try:
-        print("检查管理员账户...")
-        # 检查管理员是否已存在
         admin = User.query.filter_by(username='admin').first()
-        
         if not admin:
-            print("创建新的管理员账户...")
-            # 使用简单的哈希方法，生成较短的哈希值
-            hashed_password = generate_password_hash('admin', method='sha256')
-            # 创建管理员账户
             admin = User(
-                id=str(uuid.uuid4()),
                 username='admin',
-                password=hashed_password,
                 email='admin@example.com',
-                role='admin'
+                password=generate_password_hash('admin', method='pbkdf2:sha256'),  # 使用正确的哈希方法
+                role='admin',
+                created_at=datetime.now()
             )
             db.session.add(admin)
             db.session.commit()
-            print("管理员账户创建成功")
+            print("管理员账户初始化成功")
         else:
-            print("管理员账户已存在")
+            # 更新管理员密码以确保使用正确的哈希方法
+            admin.password = generate_password_hash('admin', method='pbkdf2:sha256')
+            db.session.commit()
+            print("管理员账户已存在，已更新密码哈希")
     except Exception as e:
-        print(f"初始化管理员账户错误: {str(e)}")
+        print(f"初始化管理员账户失败: {str(e)}")
         db.session.rollback()
-        raise
+
+@app.route('/login', methods=['POST'])
+def login():
+    """用户登录"""
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({'error': '用户名和密码不能为空'}), 400
+            
+        user = User.query.filter_by(username=username).first()
+        
+        if not user:
+            return jsonify({'error': '用户名或密码错误'}), 401
+            
+        if check_password_hash(user.password, password):
+            # 登录成功
+            session['user_id'] = user.id
+            session['username'] = user.username
+            session['role'] = user.role
+            
+            return jsonify({
+                'message': '登录成功',
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'role': user.role
+                }
+            })
+        else:
+            return jsonify({'error': '用户名密码错误'}), 401
+            
+    except Exception as e:
+        print(f"登录失败: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/logout')
+def logout():
+    """用户登出"""
+    session.clear()
+    return jsonify({'message': '登出成功'})
+
+@app.route('/api/check_auth')
+def check_auth():
+    """检查用户认证状态"""
+    if 'user_id' in session:
+        return jsonify({
+            'authenticated': True,
+            'user': {
+                'id': session['user_id'],
+                'username': session['username'],
+                'role': session['role']
+            }
+        })
+    return jsonify({'authenticated': False}), 401
 
 @app.route('/')
 def index():
@@ -570,7 +636,7 @@ def get_summaries():
                 'has_file': bool(summary.file_content)  # 添加文件是否存在的标志
             })
             
-        print(f"返回 {len(results)} 条摘要记录")
+        print(f"回 {len(results)} 条摘要记录")
         return jsonify(results)
         
     except Exception as e:
@@ -701,7 +767,7 @@ def process_document():
             print(f"文件扩展名检查失败: {original_filename}")
             return jsonify({'error': '不支持的文件格式'}), 400
         
-        # 生成系统文件名（用于内部存储）
+        # 生成系统文件名（用于内部存储
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         _, ext = os.path.splitext(original_filename)  # 从原始文件名获取扩展名
         system_filename = f"document_{timestamp}{ext}"  # 使用通用前缀
@@ -711,7 +777,7 @@ def process_document():
         file_content = file.read()
         file.seek(0)  # 重置文件指针
         
-        # 创建临时文件用于读取内容
+        # 创建临时文���用于读取内容
         temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], system_filename)
         file.save(temp_file_path)
         
@@ -744,15 +810,7 @@ class ChineseTokenizer:
 
 def search_summaries(query, summaries, top_k=5):
     """
-    用TF-IDF和弦相似度进行智能检索
-    
-    Args:
-        query: 搜索查询
-        summaries: 摘要列表
-        top_k: 返回最相关结果数量
-        
-    Returns:
-        最相关的文档列表，包含相似度分数
+    用TF-IDF和余弦相似度进行智能检索
     """
     if not summaries:
         return []
@@ -765,7 +823,7 @@ def search_summaries(query, summaries, top_k=5):
     vectorizer = TfidfVectorizer(
         tokenizer=ChineseTokenizer(),
         stop_words='english',  # 移除英文停用词
-        max_features=5000  # 制特数量
+        max_features=5000  # 限制特征数量
     )
     
     try:
@@ -777,22 +835,24 @@ def search_summaries(query, summaries, top_k=5):
             tfidf_matrix[-1:], tfidf_matrix[:-1]
         ).flatten()
         
-        # 获取相似度最高的文档索引
+        # 获取相似度最高的档索引
         top_indices = np.argsort(cosine_similarities)[::-1][:top_k]
         
         # 构建结果列表
         results = []
         for idx in top_indices:
-            if cosine_similarities[idx] > 0:  # 只返回相似度大于0的果
+            if cosine_similarities[idx] > 0:  # 只返回相似度大于0的结果
                 summary = summaries[idx]
                 results.append({
                     'id': summary.id,
-                    'file_name': summary.file_name,
+                    'file_name': summary.original_filename or summary.display_filename or summary.file_name,
                     'summary_text': summary.summary_text,
                     'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
                     'similarity_score': float(cosine_similarities[idx]),
                     'summary_length': summary.summary_length,
-                    'target_language': summary.target_language
+                    'target_language': summary.target_language,
+                    'original_filename': summary.original_filename,
+                    'display_filename': summary.display_filename
                 })
         
         return results
@@ -816,6 +876,10 @@ def search_api():
         # 执行智能检索
         results = search_summaries(query, summaries)
         
+        # 确保使用原始文件名
+        for result in results:
+            result['file_name'] = result.get('original_filename') or result.get('display_filename') or result.get('file_name')
+        
         return jsonify({
             'results': results,
             'total': len(results)
@@ -826,7 +890,7 @@ def search_api():
         return jsonify({'error': str(e)}), 500
 
 def get_file_mime_type(filename):
-    """获取文件的MIME类型"""
+    """获取件的MIME类型"""
     mime_types = {
         '.pdf': 'application/pdf',
         '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -839,7 +903,7 @@ def get_file_mime_type(filename):
     return mime_types.get(ext, 'application/octet-stream')
 
 def save_uploaded_file(file, filename):
-    """保存上传的文件永久存储目录"""
+    """保存上传的文件��久存储目录"""
     # 生成唯一的文件名
     unique_filename = f"{str(uuid.uuid4())}{os.path.splitext(filename)[1]}"
     file_path = os.path.join(app.config['DOCUMENTS_FOLDER'], unique_filename)
@@ -1112,7 +1176,7 @@ def download_file(summary_id):
         return jsonify({'error': str(e)}), 500
 
 def migrate_existing_data():
-    """迁移现有数据，确保所有必要的字段都存在"""
+    """迁移现有数据，保所有必要的字段都存在"""
     try:
         with app.app_context():
             summaries = DocumentSummary.query.all()
@@ -1128,8 +1192,97 @@ def migrate_existing_data():
             db.session.commit()
             print("数据迁移完成")
     except Exception as e:
-        print(f"数据迁移失败: {str(e)}")
+        print(f"数据迁移失��: {str(e)}")
         db.session.rollback()
+
+@app.route('/admin/users')
+def admin_users():
+    """用户管理页面"""
+    return render_template('admin/users.html')
+
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    """获取用户列表"""
+    try:
+        users = User.query.all()
+        return jsonify([{
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'role': user.role,
+            'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        } for user in users])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/users/<user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    """删除用户"""
+    try:
+        user = User.query.get_or_404(user_id)
+        if user.username == 'admin':
+            return jsonify({'error': '不能删除管理员账户'}), 403
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify({'message': '户删除成功'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/users/<user_id>', methods=['PUT'])
+def update_user(user_id):
+    """更新用户信息"""
+    try:
+        user = User.query.get_or_404(user_id)
+        data = request.get_json()
+        
+        if 'username' in data and data['username'] != user.username:
+            if User.query.filter_by(username=data['username']).first():
+                return jsonify({'error': '用户名已存在'}), 400
+            user.username = data['username']
+            
+        if 'email' in data and data['email'] != user.email:
+            if User.query.filter_by(email=data['email']).first():
+                return jsonify({'error': '邮箱已存在'}), 400
+            user.email = data['email']
+            
+        if 'role' in data and data['role'] != user.role:
+            if user.username == 'admin' and data['role'] != 'admin':
+                return jsonify({'error': '不能修改管理员角色'}), 403
+            user.role = data['role']
+            
+        if 'password' in data and data['password']:
+            user.password = generate_password_hash(data['password'], method='pbkdf2:sha256')
+            
+        db.session.commit()
+        return jsonify({
+            'message': '户信息更新成功',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'role': user.role,
+                'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            }
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/users/<user_id>', methods=['GET'])
+def get_user(user_id):
+    """获取单个用户信息"""
+    try:
+        user = User.query.get_or_404(user_id)
+        return jsonify({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'role': user.role,
+            'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     with app.app_context():

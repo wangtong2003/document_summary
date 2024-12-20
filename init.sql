@@ -13,7 +13,7 @@ DROP TABLE IF EXISTS file_mappings;
 
 -- 创建用户表
 CREATE TABLE users (
-    id VARCHAR(36) PRIMARY KEY,
+    id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(80) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
     email VARCHAR(120) NOT NULL UNIQUE,
@@ -55,11 +55,9 @@ CREATE TABLE file_mappings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 创建管理员账户
-INSERT INTO users (id, username, password, email, role) 
+INSERT INTO users (username, password, email, role) 
 VALUES (
-    UUID(), 
     'admin',
-    -- 密码为 'admin' 的哈希值
     '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewFpxQgkD8ECwmy.',
     'admin@example.com',
     'admin'

@@ -5,112 +5,263 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>用户管理 - 文档摘要生成器</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            padding-top: 70px;
+        }
+
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        .card {
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 1rem;
+        }
+
+        .table {
+            margin-bottom: 0;
+        }
+
+        .table th {
+            border-top: none;
+            background-color: #f8f9fa;
+        }
+
+        .btn-custom {
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s;
+        }
+
+        .btn-custom:hover {
+            transform: translateY(-1px);
+        }
+    </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-light bg-light">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">文档摘要生成器</a>
-            <div class="collapse navbar-collapse">
-                <ul class="navbar-nav me-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/summary_library">摘要库</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/admin/users">用户管理</a>
-                    </li>
-                </ul>
-                <div class="d-flex">
-                    <span class="navbar-text me-3" id="userInfo"></span>
-                    <button class="btn btn-outline-danger" onclick="logout()">退出</button>
-                </div>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-file-text me-2"></i>文档摘要生成器
+            </a>
+            <div class="d-flex align-items-center">
+                <a href="/" class="btn btn-outline-primary btn-custom me-3">
+                    <i class="bi bi-house-door"></i> 返回首页
+                </a>
+                <a href="/summary_library" class="btn btn-outline-secondary btn-custom me-3">
+                    <i class="bi bi-journal-text"></i> 摘要库
+                </a>
             </div>
         </div>
     </nav>
 
-    <div class="container mt-4">
-        <h2>用户管理</h2>
-        <div class="table-responsive">
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>用户名</th>
-                        <th>邮箱</th>
-                        <th>角色</th>
-                        <th>创建时间</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="usersList">
-                </tbody>
-            </table>
+    <!-- 主要内容 -->
+    <div class="container">
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header bg-white">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0">用户管理</h5>
+                            <button class="btn btn-primary btn-sm" onclick="showAddUserModal()">
+                                <i class="bi bi-person-plus"></i> 添加用户
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>用户名</th>
+                                        <th>邮箱</th>
+                                        <th>角色</th>
+                                        <th>创建时间</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="userTableBody">
+                                    <!-- 用户列表将通过JavaScript动态加载 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
+    <!-- 添加/编辑用户模态框 -->
+    <div class="modal fade" id="userModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="modalTitle">添加用户</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="userForm">
+                        <input type="hidden" id="userId">
+                        <div class="mb-3">
+                            <label for="username" class="form-label">用户名</label>
+                            <input type="text" class="form-control" id="username" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="email" class="form-label">邮箱</label>
+                            <input type="email" class="form-control" id="email" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="password" class="form-label">密码</label>
+                            <input type="password" class="form-control" id="password">
+                            <small class="text-muted">编辑用户时留空表示不修改密码</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="role" class="form-label">角色</label>
+                            <select class="form-select" id="role" required>
+                                <option value="user">普通用户</option>
+                                <option value="admin">管理员</option>
+                            </select>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="saveUser()">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        function loadUsers() {
-            const token = localStorage.getItem('token');
-            fetch('/api/users', {
-                headers: {
-                    'Authorization': `Bearer ${token}`
+        // 页面加载时获取用户列表
+        document.addEventListener('DOMContentLoaded', loadUsers);
+
+        // 加载用户列表
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/users');
+                if (!response.ok) {
+                    throw new Error('获取用户列表失败');
                 }
-            })
-            .then(response => response.json())
-            .then(users => {
-                const tbody = document.getElementById('usersList');
-                tbody.innerHTML = '';
-                users.forEach(user => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
+                const users = await response.json();
+                
+                const tableBody = document.getElementById('userTableBody');
+                tableBody.innerHTML = users.map(user => `
+                    <tr>
                         <td>${user.username}</td>
                         <td>${user.email}</td>
+                        <td>${user.role === 'admin' ? '管理员' : '普通用户'}</td>
+                        <td>${user.created_at}</td>
                         <td>
-                            <select class="form-select" onchange="updateUserRole('${user.id}', this.value)">
-                                <option value="user" ${user.role === 'user' ? 'selected' : ''}>用户</option>
-                                <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>管理员</option>
-                            </select>
+                            <button class="btn btn-sm btn-outline-primary me-2" onclick="editUser('${user.id}')">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteUser('${user.id}')"
+                                    ${user.username === 'admin' ? 'disabled' : ''}>
+                                <i class="bi bi-trash"></i>
+                            </button>
                         </td>
-                        <td>${new Date(user.created_at).toLocaleString()}</td>
-                        <td>
-                            <button class="btn btn-danger btn-sm" onclick="deleteUser('${user.id}')">删除</button>
-                        </td>
-                    `;
-                    tbody.appendChild(tr);
+                    </tr>
+                `).join('');
+            } catch (error) {
+                console.error('加载用户列表失败:', error);
+                alert('加载用户列表失败: ' + error.message);
+            }
+        }
+
+        // 显示添加用户模态框
+        function showAddUserModal() {
+            document.getElementById('modalTitle').textContent = '添加用户';
+            document.getElementById('userForm').reset();
+            document.getElementById('userId').value = '';
+            document.getElementById('password').required = true;
+            new bootstrap.Modal(document.getElementById('userModal')).show();
+        }
+
+        // 编辑用户
+        async function editUser(userId) {
+            try {
+                const response = await fetch(`/api/users/${userId}`);
+                if (!response.ok) {
+                    throw new Error('获取用户信息失败');
+                }
+                const user = await response.json();
+                
+                document.getElementById('modalTitle').textContent = '编辑用户';
+                document.getElementById('userId').value = user.id;
+                document.getElementById('username').value = user.username;
+                document.getElementById('email').value = user.email;
+                document.getElementById('role').value = user.role;
+                document.getElementById('password').required = false;
+                
+                new bootstrap.Modal(document.getElementById('userModal')).show();
+            } catch (error) {
+                console.error('编辑用户失败:', error);
+                alert('编辑用户失败: ' + error.message);
+            }
+        }
+
+        // 保存用户
+        async function saveUser() {
+            try {
+                const userId = document.getElementById('userId').value;
+                const data = {
+                    username: document.getElementById('username').value,
+                    email: document.getElementById('email').value,
+                    password: document.getElementById('password').value,
+                    role: document.getElementById('role').value
+                };
+
+                const response = await fetch(userId ? `/api/users/${userId}` : '/api/users', {
+                    method: userId ? 'PUT' : 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
                 });
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                if (error.status === 401) {
-                    window.location.href = '/login';
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || '保存用户失败');
                 }
-            });
+
+                bootstrap.Modal.getInstance(document.getElementById('userModal')).hide();
+                loadUsers();
+            } catch (error) {
+                console.error('保存用户失败:', error);
+                alert('保存用户失败: ' + error.message);
+            }
         }
 
-        function updateUserRole(userId, newRole) {
-            const token = localStorage.getItem('token');
-            fetch(`/api/users/${userId}/role`, {
-                method: 'PUT',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ role: newRole })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.message) {
-                    alert('角色更新成功');
+        // 删除用户
+        async function deleteUser(userId) {
+            if (!confirm('确定要删除这个用户吗？此操作不可恢复。')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/users/${userId}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || '删除用户失败');
                 }
-            })
-            .catch(error => console.error('Error:', error));
-        }
 
-        function logout() {
-            localStorage.removeItem('token');
-            window.location.href = '/login';
+                loadUsers();
+            } catch (error) {
+                console.error('删除用户失败:', error);
+                alert('删除用户失败: ' + error.message);
+            }
         }
-
-        // 页面加载时加载用户列表
-        document.addEventListener('DOMContentLoaded', loadUsers);
     </script>
 </body>
 </html>

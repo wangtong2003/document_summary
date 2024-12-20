@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
@@ -226,56 +227,13 @@
             }
         });
 
-        // 测试 API 连接
-        async function testAPI() {
-            try {
-                const response = await fetch('/summaries');
-                const data = await response.json();
-                console.log('API 测试结果:', {
-                    status: response.status,
-                    statusText: response.statusText,
-                    headers: Object.fromEntries(response.headers.entries()),
-                    data: data
-                });
-            } catch (error) {
-                console.error('API 测试失败:', error);
-            }
-        }
-
-        // 页面加载时测试 API
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log('页面加载完成，开始测试 API...');
-            testAPI();
-            loadSummaries();
-        });
-
-        // 获取文件类型对应的图标
-        function getFileIcon(fileType) {
-            const iconMap = {
-                'pdf': 'bi-file-pdf',
-                'docx': 'bi-file-word',
-                'txt': 'bi-file-text',
-                'md': 'bi-markdown',
-                'epub': 'bi-book'
-            };
-            return iconMap[fileType.toLowerCase()] || 'bi-file-earmark';
-        }
-
         // 加载摘要列表
         async function loadSummaries() {
             try {
                 console.log('开始加载摘要列表...');
                 const container = document.getElementById('summariesContainer');
-                if (!container) {
-                    console.error('找不到摘要容器元素！');
-                    return;
-                }
                 const emptyState = document.getElementById('emptyState');
-                if (!emptyState) {
-                    console.error('找不到空状态元素！');
-                    return;
-                }
-
+                
                 console.log('发送请求到 /summaries 接口...');
                 const response = await fetch('/summaries');
                 console.log('收到响应:', response);
@@ -310,7 +268,7 @@
                     }
                     return `
                         <div class="col-md-4 mb-4">
-                            <div class="card summary-card h-100" onclick="showSummaryDetail(${summary.id})">
+                            <div class="card summary-card h-100">
                                 <div class="card-body text-center">
                                     <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
                                     <h5 class="card-title text-truncate">${summary.file_name || '未命名文档'}</h5>
@@ -327,6 +285,17 @@
                                         <small>
                                             <i class="bi bi-text-paragraph me-1"></i>${summary.summary_length || '未指定长度'}
                                         </small>
+                                    </div>
+                                    <div class="mt-3">
+                                        <button class="btn btn-outline-primary btn-sm me-2" onclick="showSummaryDetail(${summary.id}); event.stopPropagation();">
+                                            <i class="bi bi-eye"></i> 查看摘要
+                                        </button>
+                                        <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${summary.id}, '${encodeURIComponent(summary.file_name)}'); event.stopPropagation();">
+                                            <i class="bi bi-file-earmark-text"></i> 预览原文
+                                        </button>
+                                        <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
+                                            <i class="bi bi-download"></i> 下载原文
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -351,6 +320,18 @@
                     `;
                 }
             }
+        }
+
+        // 获取文件类型对应的图标
+        function getFileIcon(fileType) {
+            const iconMap = {
+                'pdf': 'bi-file-pdf',
+                'docx': 'bi-file-word',
+                'txt': 'bi-file-text',
+                'md': 'bi-markdown',
+                'epub': 'bi-book'
+            };
+            return iconMap[fileType.toLowerCase()] || 'bi-file-earmark';
         }
 
         // 显示摘要详情
@@ -408,29 +389,16 @@ ${summary.summary_text || '无摘要内容'}
             }
         }
 
-        // 删除摘要
-        async function deleteSummary(summaryId) {
-            if (!confirm('确定要删除这个摘要吗？')) {
-                return;
-            }
+        // 预览原始文档
+        function previewOriginal(id, fileName) {
+            // 使用原始文件名作为窗口标题，直接打开预览URL
+            const decodedFileName = decodeURIComponent(fileName);
+            window.open(`/preview/${id}`, '_blank', 'noopener,noreferrer');
+        }
 
-            try {
-                const response = await fetch(`/summaries/${summaryId}`, {
-                    method: 'DELETE'
-                });
-
-                if (!response.ok) {
-                    throw new Error('删除摘要失败');
-                }
-
-                // 关闭模态框并重新加载列表
-                const modal = bootstrap.Modal.getInstance(document.getElementById('summaryModal'));
-                modal.hide();
-                loadSummaries();
-            } catch (error) {
-                console.error('Error:', error);
-                alert('删除摘要失败');
-            }
+        // 下载文档
+        function downloadDocument(summaryId) {
+            window.location.href = `/download/${summaryId}`;
         }
 
         // 更新搜索功能
@@ -455,7 +423,7 @@ ${summary.summary_text || '无摘要内容'}
 
                 const container = document.getElementById('summariesContainer');
                 const emptyState = document.getElementById('emptyState');
-
+                
                 if (!data.results || data.results.length === 0) {
                     container.innerHTML = `
                         <div class="col-12 text-center py-5">
@@ -466,7 +434,7 @@ ${summary.summary_text || '无摘要内容'}
                     `;
                     return;
                 }
-
+                
                 const html = data.results.map(summary => `
                     <div class="col-md-4 mb-4">
                         <div class="card summary-card h-100" onclick="showSummaryDetail(${summary.id})">
@@ -520,6 +488,9 @@ ${summary.summary_text || '无摘要内容'}
                 }
             }
         });
+
+        // 页面加载时获取摘要列表
+        document.addEventListener('DOMContentLoaded', loadSummaries);
     </script>
 </body>
 </html>

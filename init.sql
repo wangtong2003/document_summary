@@ -1,48 +1,69 @@
 -- 创建数据库
-CREATE DATABASE IF NOT EXISTS doc_summary DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS doc_summary CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 USE doc_summary;
 
--- 用户表
-CREATE TABLE IF NOT EXISTS users (
-    id VARCHAR(36) PRIMARY KEY,
-    username VARCHAR(50) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    role ENUM('user', 'admin') DEFAULT 'user',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+-- 设置外键检查为0
+SET FOREIGN_KEY_CHECKS=0;
 
--- 文档摘要表
-CREATE TABLE IF NOT EXISTS document_summaries (
+-- 删除已存在的表
+DROP TABLE IF EXISTS document_summaries;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS file_mappings;
+
+-- 创建用户表
+CREATE TABLE users (
+    id VARCHAR(36) PRIMARY KEY,
+    username VARCHAR(80) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
+    role VARCHAR(20) NOT NULL DEFAULT 'user',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 创建文档摘要表
+CREATE TABLE document_summaries (
     id INT AUTO_INCREMENT PRIMARY KEY,
     file_name VARCHAR(255) NOT NULL,
-    file_hash VARCHAR(64) NOT NULL UNIQUE,
-    summary_text TEXT NOT NULL,
-    summary_length VARCHAR(50),
-    target_language VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+    file_hash VARCHAR(32) NOT NULL,
+    summary_text LONGTEXT NOT NULL,
+    original_text LONGTEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME ON UPDATE CURRENT_TIMESTAMP,
+    summary_length VARCHAR(20),
+    target_language VARCHAR(20),
+    file_content LONGBLOB,
+    file_size BIGINT,
+    mime_type VARCHAR(100),
+    original_filename VARCHAR(255),
+    display_filename VARCHAR(255),
+    INDEX idx_file_hash (file_hash),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 收藏表
-CREATE TABLE IF NOT EXISTS favorites (
-    id VARCHAR(36) PRIMARY KEY,
-    user_id VARCHAR(36) NOT NULL,
-    message_id VARCHAR(36) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+-- 创建文件名映射表
+CREATE TABLE file_mappings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    summary_id INT NOT NULL,
+    original_filename VARCHAR(255) NOT NULL,
+    system_filename VARCHAR(255) NOT NULL,
+    display_filename VARCHAR(255) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (summary_id) REFERENCES document_summaries(id) ON DELETE CASCADE,
+    INDEX idx_summary_id (summary_id),
+    INDEX idx_system_filename (system_filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 消息表
-CREATE TABLE IF NOT EXISTS messages (
-    id VARCHAR(36) PRIMARY KEY,
-    content TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+-- 创建管理员账户
+INSERT INTO users (id, username, password, email, role) 
+VALUES (
+    UUID(), 
+    'admin',
+    -- 密码为 'admin' 的哈希值
+    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewFpxQgkD8ECwmy.',
+    'admin@example.com',
+    'admin'
+) ON DUPLICATE KEY UPDATE username=username;
 
--- 创建索引
-CREATE INDEX idx_document_summaries_file_hash ON document_summaries(file_hash);
-CREATE INDEX idx_favorites_user_id ON favorites(user_id);
-CREATE INDEX idx_favorites_message_id ON favorites(message_id);
+-- 设置外键检查为1
+SET FOREIGN_KEY_CHECKS=1;

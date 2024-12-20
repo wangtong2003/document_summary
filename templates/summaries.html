@@ -30,6 +30,20 @@
             border: none;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             height: 100%;
+            position: relative;
+        }
+
+        .delete-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 10;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .summary-card:hover .delete-btn {
+            opacity: 1;
         }
 
         .summary-card:hover {
@@ -232,7 +246,6 @@
             try {
                 console.log('开始加载摘要列表...');
                 const container = document.getElementById('summariesContainer');
-                const emptyState = document.getElementById('emptyState');
                 
                 console.log('发送请求到 /summaries 接口...');
                 const response = await fetch('/summaries');
@@ -250,15 +263,25 @@
                     throw new Error('Invalid data format');
                 }
 
+                // 清空容器
+                container.innerHTML = '';
+
                 if (summaries.length === 0) {
                     console.log('没有找到摘要数据，显示空状态');
-                    emptyState.style.display = 'block';
-                    container.innerHTML = '';
+                    container.innerHTML = `
+                        <div class="col-12 empty-state">
+                            <i class="bi bi-folder2-open"></i>
+                            <h4>暂无文档摘要</h4>
+                            <p class="text-muted">您还没有生成任何文档摘要，请返回首页上传文档。</p>
+                            <a href="/" class="btn btn-primary btn-custom">
+                                <i class="bi bi-plus-lg"></i> 新建摘要
+                            </a>
+                        </div>
+                    `;
                     return;
                 }
 
                 console.log(`找到 ${summaries.length} 条摘要数据，开始渲染...`);
-                emptyState.style.display = 'none';
                 
                 const html = summaries.map(summary => {
                     console.log('正在渲染摘要:', summary);
@@ -269,6 +292,11 @@
                     return `
                         <div class="col-md-4 mb-4">
                             <div class="card summary-card h-100">
+                                <button class="btn btn-outline-danger btn-sm delete-btn" 
+                                        onclick="deleteSummary(${summary.id}); event.stopPropagation();"
+                                        title="删除摘要">
+                                    <i class="bi bi-trash"></i>
+                                </button>
                                 <div class="card-body text-center">
                                     <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
                                     <h5 class="card-title text-truncate">${summary.file_name || '未命名文档'}</h5>
@@ -308,17 +336,17 @@
                 console.log('渲染完成');
             } catch (error) {
                 console.error('加载摘要列表时出错:', error);
-                if (emptyState) {
-                    emptyState.style.display = 'block';
-                    emptyState.innerHTML = `
+                const container = document.getElementById('summariesContainer');
+                container.innerHTML = `
+                    <div class="col-12 empty-state">
                         <i class="bi bi-exclamation-triangle"></i>
                         <h4>加载失败</h4>
                         <p class="text-muted">加载摘要列表时出现错误: ${error.message}</p>
                         <button onclick="loadSummaries()" class="btn btn-primary btn-custom">
                             <i class="bi bi-arrow-clockwise"></i> 重试
                         </button>
-                    `;
-                }
+                    </div>
+                `;
             }
         }
 
@@ -354,7 +382,7 @@
                     throw new Error('找不到摘要详情容器元素');
                 }
                 
-                // 构建完整的 markdown 内容
+                // 构建完整 markdown 内容
                 const markdownContent = `
 # ${summary.file_name || '未命名文档'}
 
@@ -391,7 +419,7 @@ ${summary.summary_text || '无摘要内容'}
 
         // 预览原始文档
         function previewOriginal(id, fileName) {
-            // 使用原始文件名作为窗口标题，直接打开预览URL
+            // 使用原始文件名作为窗标题，直接打开预览URL
             const decodedFileName = decodeURIComponent(fileName);
             window.open(`/preview/${id}`, '_blank', 'noopener,noreferrer');
         }
@@ -491,6 +519,45 @@ ${summary.summary_text || '无摘要内容'}
 
         // 页面加载时获取摘要列表
         document.addEventListener('DOMContentLoaded', loadSummaries);
+
+        // 删除摘要
+        async function deleteSummary(summaryId) {
+            if (!confirm('确定要删除这条摘要吗？此操作不可恢复。')) {
+                return;
+            }
+            
+            try {
+                console.log(`开始删除摘要 ID: ${summaryId}`);
+                const response = await fetch(`/summaries/${summaryId}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || '删除失败');
+                }
+                
+                console.log('删除成功，刷新页面');
+                
+                // 重新加载摘要列表
+                await loadSummaries();
+                
+                // 如果删除后没有更多摘要，显示空状态
+                const container = document.getElementById('summariesContainer');
+                const emptyStateDiv = document.getElementById('emptyState');
+                
+                if (container.children.length === 0) {
+                    if (emptyStateDiv) {
+                        emptyStateDiv.style.display = 'block';
+                    }
+                }
+                
+            } catch (error) {
+                console.error('删除摘要时出错:', error);
+                alert('删除失败: ' + error.message);
+            }
+        }
     </script>
 </body>
 </html>

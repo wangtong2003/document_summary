@@ -367,7 +367,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
             'very_long': '约2000字'
         }
         
-        # 获��参数
+        # 获参数
         summary_length = params.get('summary_length', 'medium')
         target_length = summary_length_map.get(summary_length, '约500字')
         target_language = params.get('target_language', 'chinese')
@@ -607,12 +607,44 @@ def get_summary_detail(summary_id):
 def delete_summary(summary_id):
     """删除指定摘要"""
     try:
-        summary = DocumentSummary.query.get_or_404(summary_id)
-        db.session.delete(summary)
-        db.session.commit()
-        return jsonify({'message': '删除成功'})
+        print(f"\n=== 开始删除摘要 ID: {summary_id} ===")
+        
+        # 首先查找摘要记录
+        summary = DocumentSummary.query.get(summary_id)
+        if not summary:
+            error_msg = f"未找到ID为 {summary_id} 的摘要记录"
+            print(error_msg)
+            return jsonify({'error': error_msg}), 404
+            
+        print(f"找到摘要记录: {summary.file_name}")
+        
+        try:
+            # 删除关联的文件映射记录
+            mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
+            if mappings:
+                print(f"删除 {len(mappings)} 个关联的文件映射记录")
+                for mapping in mappings:
+                    db.session.delete(mapping)
+            else:
+                print("没有找到关联的文件映射记录")
+            
+            # 删除摘要记录
+            print("删除摘要记录")
+            db.session.delete(summary)
+            
+            # 提交事务
+            db.session.commit()
+            print(f"摘要删除成功")
+            
+            return jsonify({'message': '删除成功'})
+            
+        except Exception as e:
+            print(f"删除过程中出错: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'删除失败: {str(e)}'}), 500
+            
     except Exception as e:
-        db.session.rollback()
+        print(f"删除摘要时出错: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/favicon.ico')
@@ -865,7 +897,7 @@ def convert_epub_to_html(file_path):
 
 @app.route('/preview/<int:summary_id>')
 def preview_file(summary_id):
-    """预览��始文档"""
+    """预览始文档"""
     try:
         summary = DocumentSummary.query.get_or_404(summary_id)
         

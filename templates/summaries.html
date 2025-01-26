@@ -8,6 +8,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.css" rel="stylesheet">
     <style>
         :root {
             --primary-color: #4A90E2;
@@ -180,6 +181,150 @@
         .modal-lg {
             max-width: 900px;
         }
+
+        .topic-chart-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+            opacity: 0;
+            max-height: 0;
+            overflow: hidden;
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .topic-chart-container.show {
+            opacity: 1;
+            max-height: 1000px;
+        }
+        
+        .topic-analysis-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        
+        .topic-analysis-header h6 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin: 0;
+        }
+        
+        .topic-analysis-header .close-btn {
+            padding: 4px 8px;
+            background: none;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .topic-analysis-header .close-btn:hover {
+            color: #1a1a1a;
+        }
+        
+        .topic-chart-wrapper {
+            position: relative;
+            height: 250px;
+            margin-bottom: 25px;
+        }
+        
+        .topic-keywords {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #f0f0f0;
+        }
+        
+        .topic-group {
+            margin-bottom: 15px;
+            opacity: 0;
+            transform: translateY(10px);
+            transition: all 0.4s ease;
+            transition-delay: calc(var(--index) * 100ms);
+        }
+        
+        .topic-chart-container.show .topic-group {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        .topic-group-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .topic-group-header .topic-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            margin-right: 8px;
+        }
+        
+        .topic-group-header .topic-title {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #1a1a1a;
+        }
+        
+        .topic-group-header .topic-percentage {
+            margin-left: auto;
+            font-size: 0.85rem;
+            color: #666;
+        }
+        
+        .topic-keywords-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-left: 20px;
+        }
+        
+        .topic-keyword {
+            display: inline-block;
+            padding: 4px 10px;
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 15px;
+            font-size: 0.85rem;
+            color: #495057;
+            transition: all 0.3s ease;
+        }
+        
+        .topic-keyword:hover {
+            background: var(--topic-color);
+            color: white;
+            border-color: var(--topic-color);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .loading-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+        
+        .loading-indicator .spinner {
+            width: 40px;
+            height: 40px;
+            margin-bottom: 10px;
+        }
+        
+        .chart-tooltip {
+            background: rgba(255, 255, 255, 0.95) !important;
+            border-radius: 8px !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
+            padding: 8px 12px !important;
+            font-size: 0.9rem !important;
+            color: #1a1a1a !important;
+            border: 1px solid #e9ecef !important;
+        }
     </style>
 </head>
 <body>
@@ -253,6 +398,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
     <script>
         // 初始化 markdown-it
         const md = window.markdownit({
@@ -368,9 +514,30 @@
                                         <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${summary.id}, '${encodeURIComponent(summary.file_name)}'); event.stopPropagation();">
                                             <i class="bi bi-file-earmark-text"></i> 预览原文
                                         </button>
-                                        <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
+                                        <button class="btn btn-outline-info btn-sm me-2" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
                                             <i class="bi bi-download"></i> 下载原文
                                         </button>
+                                        <button class="btn btn-outline-secondary btn-sm btn-analyze" onclick="toggleTopicAnalysis(this, ${summary.id}); event.stopPropagation();">
+                                            <i class="bi bi-graph-up"></i> 主题分析
+                                        </button>
+                                    </div>
+                                    <div class="topic-chart-container mt-4" style="display: none;">
+                                        <div class="topic-analysis-header">
+                                            <h6>主题分布分析</h6>
+                                            <button type="button" class="close-btn" onclick="toggleTopicAnalysis(this.closest('.card').querySelector('.btn-analyze'), ${summary.id})">
+                                                <i class="bi bi-x-lg"></i>
+                                            </button>
+                                        </div>
+                                        <div class="loading-indicator" style="display: none;">
+                                            <div class="spinner-border text-primary spinner" role="status">
+                                                <span class="visually-hidden">加载中...</span>
+                                            </div>
+                                            <p class="text-muted">正在分析文档主题...</p>
+                                        </div>
+                                        <div class="topic-chart-wrapper">
+                                            <canvas class="topic-chart"></canvas>
+                                        </div>
+                                        <div class="topic-keywords"></div>
                                     </div>
                                 </div>
                             </div>
@@ -381,6 +548,65 @@
                 console.log('生成的 HTML:', html);
                 container.innerHTML = html;
                 console.log('渲染完成');
+
+                // 初始化所有主题分析图表
+                document.querySelectorAll('.topic-chart').forEach((canvas, index) => {
+                    const summary = summaries[index];
+                    if (summary && summary.topic_analysis && summary.topic_analysis.success) {
+                        const distribution = summary.topic_analysis.topic_distribution;
+                        const labels = summary.topic_analysis.topic_keywords.map((_, idx) => `主题${idx + 1}`);
+                        
+                        new Chart(canvas, {
+                            type: 'bar',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    data: distribution,
+                                    backgroundColor: [
+                                        'rgba(54, 162, 235, 0.6)',
+                                        'rgba(75, 192, 192, 0.6)',
+                                        'rgba(255, 159, 64, 0.6)',
+                                        'rgba(153, 102, 255, 0.6)'
+                                    ],
+                                    borderColor: [
+                                        'rgba(54, 162, 235, 1)',
+                                        'rgba(75, 192, 192, 1)',
+                                        'rgba(255, 159, 64, 1)',
+                                        'rgba(153, 102, 255, 1)'
+                                    ],
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: {
+                                        display: false
+                                    },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: function(context) {
+                                                const value = context.raw;
+                                                return `比重: ${(value * 100).toFixed(1)}%`;
+                                            }
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: {
+                                            callback: function(value) {
+                                                return (value * 100).toFixed(0) + '%';
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
             } catch (error) {
                 console.error('加载摘要列表时出错:', error);
                 const container = document.getElementById('summariesContainer');
@@ -571,6 +797,20 @@ ${summary.summary_text || '无摘要内容'}
                                         <i class="bi bi-download"></i> 下载原文
                                     </button>
                                 </div>
+                                ${summary.topic_analysis && summary.topic_analysis.success ? `
+                                    <div class="topic-chart-container mt-4">
+                                        <h6 class="mb-3">主题分布分析</h6>
+                                        <canvas class="topic-chart" height="200"></canvas>
+                                        <div class="topic-keywords mt-3">
+                                            ${summary.topic_analysis.topic_keywords.map((words, idx) => `
+                                                <div class="mb-2">
+                                                    <strong>主题${idx + 1}:</strong>
+                                                    ${words.map(word => `<span class="topic-keyword">${word}</span>`).join('')}
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                ` : ''}
                             </div>
                         </div>
                     </div>
@@ -639,6 +879,157 @@ ${summary.summary_text || '无摘要内容'}
             } catch (error) {
                 console.error('删除摘要时出错:', error);
                 alert('删除失败: ' + error.message);
+            }
+        }
+
+        async function toggleTopicAnalysis(button, summaryId) {
+            const card = button.closest('.card');
+            const container = card.querySelector('.topic-chart-container');
+            const loadingIndicator = container.querySelector('.loading-indicator');
+            
+            // 如果容器已经显示，则隐藏它
+            if (container.classList.contains('show')) {
+                container.classList.remove('show');
+                button.classList.remove('active');
+                setTimeout(() => {
+                    container.style.display = 'none';
+                }, 600);
+                return;
+            }
+            
+            // 显示容器和加载指示器
+            container.style.display = 'block';
+            loadingIndicator.style.display = 'block';
+            button.classList.add('active');
+            
+            // 强制重绘以触发动画
+            container.offsetHeight;
+            container.classList.add('show');
+            
+            try {
+                // 获取主题分析数据
+                const response = await fetch(`/analyze_topics/${summaryId}`);
+                if (!response.ok) {
+                    throw new Error('获取主题分析数据失败');
+                }
+                
+                const topicData = await response.json();
+                
+                // 隐藏加载指示器
+                loadingIndicator.style.display = 'none';
+                
+                // 渲染图表
+                const chartCanvas = container.querySelector('.topic-chart');
+                const keywordsContainer = container.querySelector('.topic-keywords');
+                
+                // 定义主题颜色
+                const colors = [
+                    { bg: 'rgba(79, 129, 189, 0.2)', border: 'rgba(79, 129, 189, 1)' },
+                    { bg: 'rgba(192, 80, 77, 0.2)', border: 'rgba(192, 80, 77, 1)' },
+                    { bg: 'rgba(155, 187, 89, 0.2)', border: 'rgba(155, 187, 89, 1)' },
+                    { bg: 'rgba(128, 100, 162, 0.2)', border: 'rgba(128, 100, 162, 1)' }
+                ];
+                
+                // 创建图表
+                new Chart(chartCanvas, {
+                    type: 'bar',
+                    data: {
+                        labels: topicData.topic_keywords.map((_, idx) => `主题${idx + 1}`),
+                        datasets: [{
+                            data: topicData.topic_distribution,
+                            backgroundColor: colors.map(c => c.bg),
+                            borderColor: colors.map(c => c.border),
+                            borderWidth: 2,
+                            borderRadius: 4,
+                            maxBarThickness: 50
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: {
+                            duration: 1000,
+                            easing: 'easeOutQuart'
+                        },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                enabled: true,
+                                position: 'nearest',
+                                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                                titleColor: '#1a1a1a',
+                                bodyColor: '#1a1a1a',
+                                borderColor: '#e9ecef',
+                                borderWidth: 1,
+                                padding: 10,
+                                cornerRadius: 8,
+                                displayColors: false,
+                                callbacks: {
+                                    title: function(items) {
+                                        const idx = items[0].dataIndex;
+                                        return `主题 ${idx + 1}`;
+                                    },
+                                    label: function(context) {
+                                        const keywords = topicData.topic_keywords[context.dataIndex];
+                                        const percentage = (context.raw * 100).toFixed(1);
+                                        return [
+                                            `比重: ${percentage}%`,
+                                            '关键词:',
+                                            ...keywords.map(word => `• ${word}`)
+                                        ];
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: value => `${(value * 100).toFixed(0)}%`
+                                },
+                                grid: {
+                                    color: 'rgba(0, 0, 0, 0.05)'
+                                }
+                            },
+                            x: {
+                                grid: {
+                                    display: false
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                // 显示关键词分组
+                const keywordsHtml = topicData.topic_keywords.map((words, idx) => {
+                    const percentage = (topicData.topic_distribution[idx] * 100).toFixed(1);
+                    const color = colors[idx];
+                    return `
+                        <div class="topic-group" style="--index: ${idx}">
+                            <div class="topic-group-header">
+                                <div class="topic-color" style="background-color: ${color.border}"></div>
+                                <span class="topic-title">主题 ${idx + 1}</span>
+                                <span class="topic-percentage">${percentage}%</span>
+                            </div>
+                            <div class="topic-keywords-list">
+                                ${words.map(word => `
+                                    <span class="topic-keyword" style="--topic-color: ${color.border}">${word}</span>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                keywordsContainer.innerHTML = keywordsHtml;
+                
+            } catch (error) {
+                console.error('主题分析失败:', error);
+                container.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        主题分析失败: ${error.message}
+                    </div>
+                `;
             }
         }
     </script>

@@ -36,6 +36,10 @@ from flask_migrate import Migrate
 from io import BytesIO
 from urllib.parse import quote
 import traceback
+from sklearn.decomposition import LatentDirichletAllocation
+from gensim import corpora, models
+from gensim.models.coherencemodel import CoherenceModel
+import string
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -779,6 +783,157 @@ def allowed_file(filename):
     # 移除扩展名前的点号再检查
     return extension.lstrip('.') in ALLOWED_EXTENSIONS
 
+def analyze_document_topics(text, num_topics=3, num_keywords=5):
+    """
+    使用 LDA 进行文档主题分析
+    """
+    try:
+        print("\n=== 开始文档主题分析 ===")
+        print(f"原始文本长度: {len(text)} 字符")
+        
+        # 加载停用词
+        stop_words = set([
+            '的', '了', '和', '是', '就', '都', '而', '及', '与', '着',
+            '或', '一个', '没有', '我们', '你们', '他们', '它们', '这个',
+            '那个', '这些', '那些', '这样', '那样', '之', '的话', '说',
+            '时候', '这', '那', '如果', '但是', '但', '所以', '因为',
+            '由于', '于是', '故而', '因此', '如此', '这么', '那么',
+            '什么', '谁', '哪', '怎么', '怎样', '啊', '呀', '吗', '吧',
+            '啦', '么', '呢', '了', '个', '年', '月', '日', '下', '上',
+            '中', '点', '分', '之', '为', '也', '以', '能', '要', '会',
+            '对', '到', '可以', '这种', '那种', '如何', '只', '每', '各'
+        ])
+
+        # 文本预处理
+        def preprocess_text(text):
+            # 使用精确模式分词
+            words = list(jieba.cut(text, cut_all=False))
+            print(f"分词后得到 {len(words)} 个词")
+            
+            # 过滤规则
+            words = [w.strip() for w in words if w.strip()]  # 去除空白字符
+            words = [w for w in words if len(w) > 1]  # 保留多字词
+            words = [w for w in words if not w.isdigit()]  # 过滤纯数字
+            words = [w for w in words if w not in stop_words]  # 过滤停用词
+            
+            print(f"过滤后剩余 {len(words)} 个词")
+            print("部分词语示例:", words[:20])
+            return words
+
+        # 文本预处理
+        words = preprocess_text(text)
+        
+        # 确保文本长度足够
+        if len(words) < 10:  # 降低最小词数要求
+            print(f"词数太少: {len(words)} < 10")
+            return {
+                'success': False,
+                'error': '文本长度不足以进行主题分析'
+            }
+
+        # 构建词频字典和语料库
+        print("构建词频字典...")
+        dictionary = corpora.Dictionary([words])
+        print(f"初始词典大小: {len(dictionary)}")
+        
+        # 放宽词频过滤条件
+        dictionary.filter_extremes(no_below=1, no_above=1.0)  # 完全放开词频限制
+        print(f"过滤后词典大小: {len(dictionary)}")
+        
+        if len(dictionary) < 5:  # 降低词典大小要求
+            print("词典大小不足")
+            return {
+                'success': False,
+                'error': '有效词汇量不足以进行主题分析'
+            }
+            
+        # 转换为词袋模型
+        corpus = [dictionary.doc2bow(words)]
+        print(f"词袋模型大小: {len(corpus[0])} 个词-频率对")
+        
+        if len(corpus[0]) < 5:  # 降低词袋大小要求
+            print("词袋模型大小不足")
+            return {
+                'success': False,
+                'error': '有效词汇量不足以进行主题分析'
+            }
+
+        # 使用 TF-IDF 转换
+        tfidf = models.TfidfModel(corpus)
+        corpus_tfidf = tfidf[corpus]
+
+        # 配置 LDA 模型参数
+        num_topics = min(3, max(2, len(dictionary) // 20))  # 调整主题数计算方式
+        print(f"设置主题数: {num_topics}")
+        
+        lda_params = {
+            'num_topics': num_topics,
+            'alpha': 0.1,  # 较小的 alpha 值使主题分布更加集中
+            'eta': 0.01,   # 较小的 eta 值使词分布更加集中
+            'passes': 50,  # 增加迭代次数
+            'random_state': 42,
+            'update_every': 1,
+            'chunksize': 100,
+            'per_word_topics': True,
+            'minimum_probability': 0.01,
+            'iterations': 500  # 增加迭代次数
+        }
+
+        print("训练LDA模型...")
+        lda_model = models.LdaModel(
+            corpus=corpus_tfidf,
+            id2word=dictionary,
+            **lda_params
+        )
+
+        # 获取主题分布
+        topic_distribution = [0] * num_topics
+        doc_topics = lda_model.get_document_topics(corpus_tfidf[0], minimum_probability=0.01)
+        for topic_id, prob in doc_topics:
+            topic_distribution[topic_id] = float(prob)
+
+        # 标准化主题分布概率
+        total_prob = sum(topic_distribution)
+        if total_prob > 0:
+            topic_distribution = [p/total_prob for p in topic_distribution]
+
+        # 获取每个主题的关键词（使用 phi 值）
+        topic_keywords = []
+        for topic_id in range(num_topics):
+            # 获取主题-词分布
+            topic_terms = lda_model.get_topic_terms(topic_id, topn=20)  # 获取更多候选词
+            # 按 phi 值排序并选择最具代表性的词
+            sorted_terms = sorted(topic_terms, key=lambda x: x[1], reverse=True)
+            # 选择前 num_keywords 个词
+            keywords = []
+            term_count = 0
+            for term_id, phi in sorted_terms:
+                if term_count >= num_keywords:
+                    break
+                word = dictionary[term_id]
+                if len(word) > 1 and not word.isdigit():  # 过滤单字词和数字
+                    keywords.append(word)
+                    term_count += 1
+            topic_keywords.append(keywords)
+
+        print("主题分析完成")
+        print(f"主题分布: {topic_distribution}")
+        print(f"主题关键词: {topic_keywords}")
+
+        return {
+            'success': True,
+            'topic_distribution': topic_distribution,
+            'topic_keywords': topic_keywords
+        }
+
+    except Exception as e:
+        print(f"主题分析错误: {str(e)}")
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
 @app.route('/process_document', methods=['POST'])
 def process_document():
     """处理上传的文档并生成摘要"""
@@ -810,7 +965,7 @@ def process_document():
             print(f"文件扩展名检查失败: {original_filename}")
             return jsonify({'error': '不支持的文件格式'}), 400
         
-        # 生成系统文件名（用于内部存储
+        # 生成系统文件名（用于内部存储）
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         _, ext = os.path.splitext(original_filename)  # 从原始文件名获取扩展名
         system_filename = f"document_{timestamp}{ext}"  # 使用通用前缀
@@ -828,12 +983,16 @@ def process_document():
             # 读取文档内容
             text = read_document(temp_file_path)
             
+            # 进行主题分析
+            topic_analysis = analyze_document_topics(text)
+            
             # 准备文件信息
             file_info = {
-                'filename': system_filename,  # 系统内部使用的文件名
-                'original_filename': original_filename,  # 原始文件名（未经过任何处理）
+                'filename': system_filename,
+                'original_filename': original_filename,
                 'original_text': text,
-                'mime_type': get_file_mime_type(original_filename)
+                'mime_type': get_file_mime_type(original_filename),
+                'topic_analysis': topic_analysis  # 添加主题分析结果
             }
             
             # 生成摘要并保存
@@ -1325,6 +1484,31 @@ def get_user(user_id):
             'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
         })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/analyze_topics/<int:summary_id>')
+def analyze_topics(summary_id):
+    """获取文档的主题分析"""
+    try:
+        print(f"\n=== 开始分析文档主题 ID: {summary_id} ===")
+        summary = DocumentSummary.query.get_or_404(summary_id)
+        
+        # 使用原始文本进行主题分析
+        topic_analysis = analyze_document_topics(summary.original_text)
+        
+        if not topic_analysis['success']:
+            return jsonify({
+                'error': topic_analysis.get('error', '主题分析失败')
+            }), 500
+            
+        return jsonify({
+            'topic_distribution': topic_analysis['topic_distribution'],
+            'topic_keywords': topic_analysis['topic_keywords']
+        })
+        
+    except Exception as e:
+        print(f"主题分析失败: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

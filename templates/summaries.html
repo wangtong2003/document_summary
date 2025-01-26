@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档摘要库</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
+    <style>
+        :root {
+            --primary-color: #4A90E2;
+            --secondary-color: #6c757d;
+        }
+
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            padding-top: 70px;
+        }
+
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        .summary-card {
+            transition: all 0.3s ease;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            height: 100%;
+            position: relative;
+        }
+
+        .delete-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 10;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .summary-card:hover .delete-btn {
+            opacity: 1;
+        }
+
+        .summary-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .file-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+
+        .status-dot.opened {
+            background-color: #28a745;
+        }
+
+        .status-dot.unopened {
+            background-color: #dc3545;
+        }
+
+        .summary-preview {
+            max-height: 80px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .keywords-container {
+            margin: 8px 0;
+            min-height: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .keywords-container .badge {
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 5px 12px;
+            border-radius: 15px;
+            background-color: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+            transition: all 0.2s ease;
+        }
+
+        .keywords-container .badge:hover {
+            background-color: #1976d2;
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #6c757d;
+        }
+
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            color: #dee2e6;
+        }
+
+        .modal-content {
+            border-radius: 0.5rem;
+        }
+
+        .modal-header {
+            border-bottom: 1px solid #dee2e6;
+            background-color: #f8f9fa;
+        }
+
+        .btn-custom {
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s;
+        }
+
+        .btn-custom:hover {
+            transform: translateY(-1px);
+        }
+
+        .markdown-body {
+            box-sizing: border-box;
+            min-width: 200px;
+            max-width: 100%;
+            padding: 15px;
+            background-color: white;
+            border-radius: 8px;
+        }
+
+        .markdown-body h1 {
+            padding-bottom: 0.3em;
+            font-size: 2em;
+            border-bottom: 1px solid #eaecef;
+            margin-top: 0;
+        }
+
+        .markdown-body h2 {
+            padding-bottom: 0.3em;
+            font-size: 1.5em;
+            border-bottom: 1px solid #eaecef;
+        }
+
+        .markdown-body ul {
+            padding-left: 2em;
+        }
+
+        .markdown-body pre {
+            padding: 16px;
+            overflow: auto;
+            font-size: 85%;
+            line-height: 1.45;
+            background-color: #f6f8fa;
+            border-radius: 6px;
+        }
+
+        .modal-lg {
+            max-width: 900px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-file-text me-2"></i>文档摘要生成器
+            </a>
+            <div class="d-flex align-items-center">
+                <a href="/" class="btn btn-outline-primary btn-custom me-3">
+                    <i class="bi bi-house-door"></i> 返回首页
+                </a>
+                <span class="me-3 text-secondary" id="userInfo"></span>
+                <div class="d-flex">
+                    <a href="/admin/users" class="btn btn-outline-secondary btn-custom me-2" id="adminLink" style="display: none;">
+                        <i class="bi bi-people"></i> 用户管理
+                    </a>
+                    <button class="btn btn-outline-danger btn-custom" id="logoutBtn">
+                        <i class="bi bi-box-arrow-right"></i> 退出
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主要内容 -->
+    <div class="container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="mb-0">我的文档摘要库</h2>
+            <div class="d-flex gap-2">
+                <div class="input-group">
+                    <input type="text" class="form-control" id="searchInput" placeholder="输入关键词进行智能检索...">
+                    <button class="btn btn-primary" type="button" id="searchButton">
+                        <i class="bi bi-search"></i> 智能检索
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="row g-4" id="summariesContainer">
+            <!-- 空状态显示 -->
+            <div class="col-12 empty-state" id="emptyState" style="display: none;">
+                <i class="bi bi-folder2-open"></i>
+                <h4>暂无文档摘要</h4>
+                <p class="text-muted">您还没有生成任何文档摘要，请返回首页上传文档。</p>
+                <a href="/" class="btn btn-primary btn-custom">
+                    <i class="bi bi-plus-lg"></i> 新建摘要
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 摘要详情模态框 -->
+    <div class="modal fade" id="summaryModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-file-text me-2"></i>文档摘要详情
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="summaryDetail" class="markdown-body"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script>
+        // 初始化 markdown-it
+        const md = window.markdownit({
+            html: true,
+            linkify: true,
+            highlight: function (str, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(str, { language: lang }).value;
+                    } catch (__) {}
+                }
+                return ''; // 使用默认的转义
+            }
+        });
+
+        // 加载摘要列表
+        async function loadSummaries() {
+            try {
+                console.log('开始加载摘要列表...');
+                const container = document.getElementById('summariesContainer');
+                
+                console.log('发送请求到 /summaries 接口...');
+                const response = await fetch('/summaries');
+                console.log('收到响应:', response);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const summaries = await response.json();
+                console.log('解析到的摘要数据:', summaries);
+
+                if (!Array.isArray(summaries)) {
+                    console.error('收到的数据不是数组格式:', summaries);
+                    throw new Error('Invalid data format');
+                }
+
+                // 清空容器
+                container.innerHTML = '';
+
+                if (summaries.length === 0) {
+                    console.log('没有找到摘要数据，显示空状态');
+                    container.innerHTML = `
+                        <div class="col-12 empty-state">
+                            <i class="bi bi-folder2-open"></i>
+                            <h4>暂无文档摘要</h4>
+                            <p class="text-muted">您还没有生成任何文档摘要，请返回首页上传文档。</p>
+                            <a href="/" class="btn btn-primary btn-custom">
+                                <i class="bi bi-plus-lg"></i> 新建摘要
+                            </a>
+                        </div>
+                    `;
+                    return;
+                }
+
+                console.log(`找到 ${summaries.length} 条摘要数据，开始渲染...`);
+                
+                const html = summaries.map(summary => {
+                    console.log('正在渲染摘要:', summary);
+                    console.log('关键字数据:', summary.keywords);
+                    
+                    // 处理关键字显示
+                    let keywordsHtml = '';
+                    if (summary.keywords) {
+                        console.log('处理关键字:', summary.keywords);
+                        const keywordArray = summary.keywords.split('|');
+                        console.log('分割后的关键字数组:', keywordArray);
+                        keywordsHtml = keywordArray
+                            .map(keyword => `<span class="badge">${keyword.trim()}</span>`)
+                            .join('');
+                        console.log('生成的关键字HTML:', keywordsHtml);
+                    }
+                    
+                    if (!summary || !summary.id) {
+                        console.error('无效的摘要数据:', summary);
+                        return '';
+                    }
+                    
+                    return `
+                        <div class="col-md-4 mb-4">
+                            <div class="card summary-card h-100">
+                                <button class="btn btn-outline-danger btn-sm delete-btn" 
+                                        onclick="deleteSummary(${summary.id}); event.stopPropagation();"
+                                        title="删除摘要">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                <div class="card-body text-center">
+                                    <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
+                                    <h5 class="card-title text-truncate" title="${summary.file_name}">
+                                        ${summary.file_name}
+                                    </h5>
+                                    <div class="keywords-container mb-2">
+                                        ${keywordsHtml}
+                                    </div>
+                                    <div class="summary-preview mb-3">
+                                        ${summary.summary_text || '无摘要内容'}
+                                    </div>
+                                    <div class="text-muted">
+                                        <small class="me-2">
+                                            <i class="bi bi-clock me-1"></i>${summary.created_at || '未知时间'}
+                                        </small>
+                                        <small class="me-2">
+                                            <i class="bi bi-translate me-1"></i>${summary.target_language || '未指定语言'}
+                                        </small>
+                                        <small>
+                                            <i class="bi bi-text-paragraph me-1"></i>${summary.summary_length || '未指定长度'}
+                                        </small>
+                                    </div>
+                                    <div class="mt-3">
+                                        <button class="btn btn-outline-primary btn-sm me-2" onclick="showSummaryDetail(${summary.id}); event.stopPropagation();">
+                                            <i class="bi bi-eye"></i> 查看摘要
+                                        </button>
+                                        <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${summary.id}, '${encodeURIComponent(summary.file_name)}'); event.stopPropagation();">
+                                            <i class="bi bi-file-earmark-text"></i> 预览原文
+                                        </button>
+                                        <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
+                                            <i class="bi bi-download"></i> 下载原文
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                console.log('生成的 HTML:', html);
+                container.innerHTML = html;
+                console.log('渲染完成');
+            } catch (error) {
+                console.error('加载摘要列表时出错:', error);
+                const container = document.getElementById('summariesContainer');
+                container.innerHTML = `
+                    <div class="col-12 empty-state">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <h4>加载失败</h4>
+                        <p class="text-muted">加载摘要列表时出现错误: ${error.message}</p>
+                        <button onclick="loadSummaries()" class="btn btn-primary btn-custom">
+                            <i class="bi bi-arrow-clockwise"></i> 重试
+                        </button>
+                    </div>
+                `;
+            }
+        }
+
+        // 获取文件类型对应的图标
+        function getFileIcon(fileType) {
+            const iconMap = {
+                'pdf': 'bi-file-pdf',
+                'docx': 'bi-file-word',
+                'txt': 'bi-file-text',
+                'md': 'bi-markdown',
+                'epub': 'bi-book'
+            };
+            return iconMap[fileType.toLowerCase()] || 'bi-file-earmark';
+        }
+
+        // 显示摘要详情
+        async function showSummaryDetail(summaryId) {
+            try {
+                console.log(`获取摘要详情 ID: ${summaryId}`);
+                const response = await fetch(`/summaries/${summaryId}`);
+                console.log('收到响应:', response);
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '获取摘要详情失败');
+                }
+
+                const summary = await response.json();
+                console.log('解析到的摘要详情:', summary);
+                
+                const detailContainer = document.getElementById('summaryDetail');
+                if (!detailContainer) {
+                    throw new Error('找不到摘要详情容器元素');
+                }
+                
+                // 构建完整 markdown 内容
+                const markdownContent = `
+# ${summary.file_name || '未命名文档'}
+
+**创建时间：** ${summary.created_at || '未知时间'}
+**摘要长度：** ${summary.summary_length || '未指定'}
+**目标语言：** ${summary.target_language || '未指定'}
+
+---
+
+${summary.summary_text || '无摘要内容'}
+
+---
+
+*文档ID：${summary.id}*
+`;
+                
+                console.log('渲染 Markdown 内容...');
+                detailContainer.innerHTML = md.render(markdownContent);
+                
+                // 高亮代码块
+                detailContainer.querySelectorAll('pre code').forEach((block) => {
+                    window.hljs.highlightBlock(block);
+                });
+
+                const modal = new bootstrap.Modal(document.getElementById('summaryModal'));
+                modal.show();
+                console.log('摘要详情显示完成');
+            } catch (error) {
+                console.error('获取摘要详情失败:', error);
+                const errorMessage = error.message || '获取摘要详情失败';
+                alert(errorMessage);
+            }
+        }
+
+        // 预览原始文档
+        function previewOriginal(id, fileName) {
+            // 使用原始文件名作为窗标题，直接打开预览URL
+            const decodedFileName = decodeURIComponent(fileName);
+            window.open(`/preview/${id}`, '_blank', 'noopener,noreferrer');
+        }
+
+        // 下载文档
+        function downloadDocument(summaryId) {
+            window.location.href = `/download/${summaryId}`;
+        }
+
+        // 更新搜索功能
+        async function performSearch(query) {
+            try {
+                console.log('执行智能检索:', query);
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '搜索失败');
+                }
+
+                const data = await response.json();
+                console.log('搜索结果:', data);
+
+                const container = document.getElementById('summariesContainer');
+                
+                // 添加返回按钮和搜索结果提示
+                let headerHtml = `
+                    <div class="col-12 mb-4">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <button class="btn btn-outline-primary" onclick="loadSummaries()">
+                                <i class="bi bi-arrow-left"></i> 返回完整列表
+                            </button>
+                            <span class="text-muted">
+                                搜索 "${query}" 的结果 (${data.results ? data.results.length : 0} 条)
+                            </span>
+                        </div>
+                    </div>
+                `;
+                
+                if (!data.results || data.results.length === 0) {
+                    container.innerHTML = headerHtml + `
+                        <div class="col-12 text-center py-5">
+                            <i class="bi bi-search" style="font-size: 3rem; color: #dee2e6;"></i>
+                            <h4 class="mt-3">未找到相关结果</h4>
+                            <p class="text-muted">尝试使用其他关键词搜索</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const resultsHtml = data.results.map(summary => `
+                    <div class="col-md-4 mb-4">
+                        <div class="card summary-card h-100">
+                            <button class="btn btn-outline-danger btn-sm delete-btn" 
+                                    onclick="deleteSummary(${summary.id}); event.stopPropagation();"
+                                    title="删除摘要">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                            <div class="card-body text-center">
+                                <i class="bi ${getFileIcon(summary.file_name.split('.').pop())} file-icon"></i>
+                                <h5 class="card-title text-truncate" title="${summary.file_name}">
+                                    ${summary.file_name}
+                                </h5>
+                                <div class="keywords-container mb-2">
+                                    ${summary.keywords ? summary.keywords.split('|').map(keyword => 
+                                        `<span class="badge">${keyword.trim()}</span>`
+                                    ).join('') : ''}
+                                </div>
+                                <div class="summary-preview mb-3">
+                                    ${summary.summary_text}
+                                </div>
+                                <div class="text-muted">
+                                    <small class="me-2">
+                                        <i class="bi bi-clock me-1"></i>${summary.created_at || '未知时间'}
+                                    </small>
+                                    <small class="me-2">
+                                        <i class="bi bi-translate me-1"></i>${summary.target_language || '未指定语言'}
+                                    </small>
+                                    <small>
+                                        <i class="bi bi-text-paragraph me-1"></i>${summary.summary_length || '未指定长度'}
+                                    </small>
+                                </div>
+                                <div class="mt-2">
+                                    <span class="badge bg-primary">
+                                        相关度: ${(summary.similarity_score * 100).toFixed(1)}%
+                                    </span>
+                                </div>
+                                <div class="mt-3">
+                                    <button class="btn btn-outline-primary btn-sm me-2" onclick="showSummaryDetail(${summary.id}); event.stopPropagation();">
+                                        <i class="bi bi-eye"></i> 查看摘要
+                                    </button>
+                                    <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${summary.id}, '${encodeURIComponent(summary.file_name)}'); event.stopPropagation();">
+                                        <i class="bi bi-file-earmark-text"></i> 预览原文
+                                    </button>
+                                    <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
+                                        <i class="bi bi-download"></i> 下载原文
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+
+                container.innerHTML = headerHtml + resultsHtml;
+            } catch (error) {
+                console.error('搜索错误:', error);
+                alert(error.message || '搜索过程中发生错误');
+            }
+        }
+
+        // 绑定搜索事件
+        document.getElementById('searchButton').addEventListener('click', function() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (query) {
+                performSearch(query);
+            }
+        });
+
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                const query = this.value.trim();
+                if (query) {
+                    performSearch(query);
+                }
+            }
+        });
+
+        // 页面加载时获取摘要列表
+        document.addEventListener('DOMContentLoaded', loadSummaries);
+
+        // 删除摘要
+        async function deleteSummary(summaryId) {
+            if (!confirm('确定要删除这条摘要吗？此操作不可恢复。')) {
+                return;
+            }
+            
+            try {
+                console.log(`开始删除摘要 ID: ${summaryId}`);
+                const response = await fetch(`/summaries/${summaryId}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || '删除失败');
+                }
+                
+                console.log('删除成功，刷新页面');
+                
+                // 重新加载摘要列表
+                await loadSummaries();
+                
+                // 如果删除后没有更多摘要，显示空状态
+                const container = document.getElementById('summariesContainer');
+                const emptyStateDiv = document.getElementById('emptyState');
+                
+                if (container.children.length === 0) {
+                    if (emptyStateDiv) {
+                        emptyStateDiv.style.display = 'block';
+                    }
+                }
+                
+            } catch (error) {
+                console.error('删除摘要时出错:', error);
+                alert('删除失败: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

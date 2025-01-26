@@ -8,26 +8,22 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <style>
         body {
-            background: linear-gradient(120deg, #a1c4fd 0%, #c2e9fb 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
         }
 
         .login-container {
-            background: rgba(255, 255, 255, 0.9);
-            border-radius: 15px;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
-            padding: 2rem;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 2.5rem;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
             width: 100%;
-            max-width: 400px;
-            animation: fadeIn 0.5s ease;
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-20px); }
-            to { opacity: 1; transform: translateY(0); }
+            max-width: 420px;
+            backdrop-filter: blur(10px);
         }
 
         .login-header {
@@ -35,148 +31,189 @@
             margin-bottom: 2rem;
         }
 
-        .login-header h1 {
-            font-size: 2rem;
-            color: #333;
+        .login-header h2 {
+            color: #2d3748;
+            font-weight: 600;
             margin-bottom: 0.5rem;
         }
 
-        .form-floating {
-            margin-bottom: 1rem;
+        .login-header p {
+            color: #718096;
+            font-size: 0.95rem;
         }
 
-        .form-control:focus {
-            border-color: #a1c4fd;
-            box-shadow: 0 0 0 0.25rem rgba(161, 196, 253, 0.25);
+        .form-floating {
+            margin-bottom: 1.2rem;
+        }
+
+        .form-floating .form-control {
+            border: 2px solid #e2e8f0;
+            padding: 1rem 0.75rem;
+            height: calc(3.5rem + 2px);
+            transition: all 0.3s ease;
+        }
+
+        .form-floating .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.15);
+        }
+
+        .form-floating label {
+            padding: 1rem 0.75rem;
+            color: #718096;
         }
 
         .btn-login {
-            background: linear-gradient(120deg, #a1c4fd 0%, #c2e9fb 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border: none;
-            width: 100%;
+            color: white;
             padding: 0.8rem;
-            font-size: 1.1rem;
-            margin-top: 1rem;
+            font-weight: 500;
+            letter-spacing: 0.5px;
             transition: all 0.3s ease;
         }
 
         .btn-login:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(161, 196, 253, 0.4);
+            transform: translateY(-1px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
         }
 
-        .register-link {
+        .login-footer {
             text-align: center;
             margin-top: 1.5rem;
         }
 
-        .register-link a {
-            color: #a1c4fd;
+        .login-footer a {
+            color: #667eea;
             text-decoration: none;
-            transition: color 0.3s ease;
+            font-weight: 500;
         }
 
-        .register-link a:hover {
-            color: #6e9fee;
+        .login-footer a:hover {
+            text-decoration: underline;
+        }
+
+        .login-footer p {
+            color: #718096;
+            font-size: 0.9rem;
+            margin: 0.5rem 0;
+        }
+
+        .input-group-text {
+            background: transparent;
+            border: 2px solid #e2e8f0;
+            border-left: none;
+            cursor: pointer;
+        }
+
+        .password-toggle {
+            color: #718096;
         }
 
         .alert {
             display: none;
             margin-bottom: 1rem;
-            animation: shake 0.5s ease;
-        }
-
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-10px); }
-            75% { transform: translateX(10px); }
-        }
-
-        .admin-note {
-            text-align: center;
-            margin-top: 1rem;
-            font-size: 0.9rem;
-            color: #666;
         }
     </style>
 </head>
 <body>
     <div class="login-container">
         <div class="login-header">
-            <h1>欢迎回来</h1>
-            <p class="text-muted">请登录您的账号</p>
+            <h2>欢迎回来</h2>
+            <p>请登录您的账号继续使用</p>
         </div>
 
-        <div class="alert alert-danger" role="alert" id="errorMessage">
+        <div class="alert alert-danger" role="alert" id="errorAlert">
             <i class="bi bi-exclamation-triangle-fill me-2"></i>
-            <span id="errorText"></span>
+            <span id="errorMessage"></span>
         </div>
 
-        <form id="loginForm">
-            <div class="form-floating">
+        <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="form-floating mb-3">
                 <input type="text" class="form-control" id="username" placeholder="用户名" required>
                 <label for="username"><i class="bi bi-person me-2"></i>用户名</label>
             </div>
 
             <div class="form-floating">
-                <input type="password" class="form-control" id="password" placeholder="密码" required>
-                <label for="password"><i class="bi bi-lock me-2"></i>密码</label>
+                <div class="input-group">
+                    <input type="password" class="form-control" id="password" placeholder="密码" required>
+                    <span class="input-group-text" onclick="togglePassword()">
+                        <i class="bi bi-eye-slash password-toggle" id="passwordToggleIcon"></i>
+                    </span>
+                    <label for="password"><i class="bi bi-lock me-2"></i>密码</label>
+                </div>
             </div>
 
-            <button type="submit" class="btn btn-primary btn-login">
-                <i class="bi bi-box-arrow-in-right me-2"></i>登录
+            <button type="submit" class="btn btn-login w-100 mt-4">
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true" style="display: none;" id="loginSpinner"></span>
+                登录
             </button>
         </form>
 
-        <div class="register-link">
-            <p>还没有账号？<a href="/register">立即注册</a></p>
-        </div>
-
-        <div class="admin-note">
-            <p>管理员请使用专用账号登录</p>
+        <div class="login-footer">
+            <p>还没有账号？ <a href="/register">立即注册</a></p>
+            <p class="text-muted">管理员请使用专用账号登录</p>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        const loginForm = document.getElementById('loginForm');
-        const errorMessage = document.getElementById('errorMessage');
-        const errorText = document.getElementById('errorText');
-
-        loginForm.onsubmit = async (e) => {
-            e.preventDefault();
-            errorMessage.style.display = 'none';
+        async function handleLogin(event) {
+            event.preventDefault();
             
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
+            const loginSpinner = document.getElementById('loginSpinner');
+            const errorAlert = document.getElementById('errorAlert');
+            const errorMessage = document.getElementById('errorMessage');
+            
+            // 显示加载动画
+            loginSpinner.style.display = 'inline-block';
+            errorAlert.style.display = 'none';
             
             try {
-                const response = await fetch('/api/login', {
+                const response = await fetch('/login', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ username, password })
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
                 });
-
+                
                 const data = await response.json();
                 
                 if (response.ok) {
-                    // 保存 token
-                    localStorage.setItem('token', data.token);
-                    // 保存用户信息
-                    localStorage.setItem('user', JSON.stringify(data.user));
-                    // 直接重定向到首页
-                    window.location.replace('/');
+                    localStorage.setItem('token', data.access_token);
+                    localStorage.setItem('username', data.username);
+                    localStorage.setItem('userRole', data.role);
+                    window.location.href = '/';
                 } else {
-                    throw new Error(data.error || '登录失败');
+                    errorMessage.textContent = data.error || '登录失败';
+                    errorAlert.style.display = 'block';
                 }
             } catch (error) {
-                errorText.textContent = error.message;
-                errorMessage.style.display = 'block';
-                errorMessage.scrollIntoView({ behavior: 'smooth' });
+                console.error('登录错误:', error);
+                errorMessage.textContent = '登录失败，请重试';
+                errorAlert.style.display = 'block';
+            } finally {
+                loginSpinner.style.display = 'none';
             }
-        };
+        }
+
+        function togglePassword() {
+            const passwordInput = document.getElementById('password');
+            const passwordToggleIcon = document.getElementById('passwordToggleIcon');
+            
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                passwordToggleIcon.classList.replace('bi-eye-slash', 'bi-eye');
+            } else {
+                passwordInput.type = 'password';
+                passwordToggleIcon.classList.replace('bi-eye', 'bi-eye-slash');
+            }
+        }
     </script>
 </body>
 </html>

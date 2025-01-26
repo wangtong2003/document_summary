@@ -35,6 +35,7 @@ import jieba
 from flask_migrate import Migrate
 from io import BytesIO
 from urllib.parse import quote
+import traceback
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -107,6 +108,7 @@ class DocumentSummary(db.Model):
     mime_type = db.Column(db.String(100))
     original_filename = db.Column(db.String(255))
     display_filename = db.Column(db.String(255))
+    keywords = db.Column(db.String(255))  # 新增关键字字段
 
     __table_args__ = {
         'mysql_engine': 'InnoDB',
@@ -129,10 +131,11 @@ class FileMapping(db.Model):
 def save_summary_to_db(file_info, summary_text, params, file_content=None):
     """保存或更新文档摘要到MySQL"""
     try:
-        print("开始保存摘要到数据库...")
+        print("\n=== 开始保存摘要到数据库 ===")
         print(f"文件信息: {file_info}")
         print(f"摘要长度: {len(summary_text) if summary_text else 0}")
         print(f"参数: {params}")
+        print(f"关键字: {file_info.get('keywords', '无')}")
         
         # 计算文件内容的MD5哈希值
         import hashlib
@@ -150,73 +153,85 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
             file_hash=file_hash
         ).first()
         
-        if existing_summary:
-            print(f"更新现有摘要 ID: {existing_summary.id}")
-            # 更新现有摘要
-            existing_summary.summary_text = summary_text
-            existing_summary.summary_length = params.get("summary_length")
-            existing_summary.target_language = params.get("target_language")
-            existing_summary.original_filename = original_filename
-            existing_summary.display_filename = display_filename
-            if file_content:
-                existing_summary.file_content = file_content
-                existing_summary.file_size = len(file_content)
-                existing_summary.mime_type = file_info.get('mime_type')
-            existing_summary.updated_at = datetime.now()
-            
-            # 更新文件名映射
-            file_mapping = FileMapping.query.filter_by(summary_id=existing_summary.id).first()
-            if file_mapping:
-                file_mapping.original_filename = original_filename
-                file_mapping.system_filename = file_info["filename"]
-                file_mapping.display_filename = display_filename
+        try:
+            if existing_summary:
+                print(f"更新现有摘要 ID: {existing_summary.id}")
+                # 更新现有摘要
+                existing_summary.summary_text = summary_text
+                existing_summary.summary_length = params.get("summary_length")
+                existing_summary.target_language = params.get("target_language")
+                existing_summary.original_filename = original_filename
+                existing_summary.display_filename = display_filename
+                existing_summary.keywords = file_info.get('keywords')  # 更新关键字
+                if file_content:
+                    existing_summary.file_content = file_content
+                    existing_summary.file_size = len(file_content)
+                    existing_summary.mime_type = file_info.get('mime_type')
+                existing_summary.updated_at = datetime.now()
+                
+                # 更新文件名映射
+                file_mapping = FileMapping.query.filter_by(summary_id=existing_summary.id).first()
+                if file_mapping:
+                    file_mapping.original_filename = original_filename
+                    file_mapping.system_filename = file_info["filename"]
+                    file_mapping.display_filename = display_filename
+                else:
+                    new_mapping = FileMapping(
+                        summary_id=existing_summary.id,
+                        original_filename=original_filename,
+                        system_filename=file_info["filename"],
+                        display_filename=display_filename
+                    )
+                    db.session.add(new_mapping)
+                
+                db.session.commit()
+                print("摘要更新成功")
             else:
+                print("创建新摘要记录")
+                # 创建新摘要记录
+                new_summary = DocumentSummary(
+                    file_name=file_info["filename"],
+                    file_hash=file_hash,
+                    summary_text=summary_text,
+                    original_text=file_info["original_text"],
+                    summary_length=params.get("summary_length"),
+                    target_language=params.get("target_language"),
+                    file_content=file_content,
+                    file_size=len(file_content) if file_content else None,
+                    mime_type=file_info.get('mime_type'),
+                    original_filename=original_filename,
+                    display_filename=display_filename,
+                    keywords=file_info.get('keywords')  # 保存关键字
+                )
+                db.session.add(new_summary)
+                db.session.flush()  # 获取新插入记录的ID
+                
+                # 创建文件名映射
                 new_mapping = FileMapping(
-                    summary_id=existing_summary.id,
+                    summary_id=new_summary.id,
                     original_filename=original_filename,
                     system_filename=file_info["filename"],
                     display_filename=display_filename
                 )
                 db.session.add(new_mapping)
+                db.session.commit()
+                print("摘要保存成功")
             
-            db.session.commit()
-            print("摘要更新成功")
-        else:
-            print("创建新摘要记录")
-            # 创建新摘要记录
-            new_summary = DocumentSummary(
-                file_name=file_info["filename"],
-                file_hash=file_hash,
-                summary_text=summary_text,
-                original_text=file_info["original_text"],
-                summary_length=params.get("summary_length"),
-                target_language=params.get("target_language"),
-                file_content=file_content,
-                file_size=len(file_content) if file_content else None,
-                mime_type=file_info.get('mime_type'),
-                original_filename=original_filename,
-                display_filename=display_filename
-            )
-            db.session.add(new_summary)
-            db.session.flush()  # 获取新插入记录的ID
+            return True
             
-            # 创建文件名映射
-            new_mapping = FileMapping(
-                summary_id=new_summary.id,
-                original_filename=original_filename,
-                system_filename=file_info["filename"],
-                display_filename=display_filename
-            )
-            db.session.add(new_mapping)
-            db.session.commit()
-            print("摘要保存成功")
+        except Exception as e:
+            print(f"数据库操作出错: {str(e)}")
+            print(f"完整错误信息: {e.__class__.__name__}: {str(e)}")
+            traceback.print_exc()
+            db.session.rollback()
+            raise
             
-        return True
-        
     except Exception as e:
         print(f"保存摘要到数据库时出错: {str(e)}")
+        print(f"完整错误信息: {e.__class__.__name__}: {str(e)}")
+        traceback.print_exc()
         db.session.rollback()
-        raise e
+        raise
 
 # 文档处理函数
 def read_pdf(file_path):
@@ -337,10 +352,22 @@ def generate_summary(text):
         [BASIC REQUIREMENTS]
         - Summary Length: 约500字
         - Target Language: chinese
+        - Keywords: Generate exactly 4 keywords that best represent the main topics of the text
+
+        [OUTPUT FORMAT]
+        Please format your response as follows:
+
+        [KEYWORDS]
+        keyword1|keyword2|keyword3|keyword4
+
+        [SUMMARY]
+        Your summary text here...
 
         [INSTRUCTIONS]
-        - Generate a summary exactly matching the specified length;
-        - Write in chinese;
+        1. First output exactly 4 keywords separated by | character
+        2. Then output the summary after [SUMMARY] marker
+        3. Keywords should be concise and representative
+        4. Write everything in chinese
         """
         
         content = f"""
@@ -381,78 +408,33 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
             'very_long': '约2000字'
         }
         
-        # 获参
+        # 获取参数
         summary_length = params.get('summary_length', 'medium')
         target_length = summary_length_map.get(summary_length, '约500字')
         target_language = params.get('target_language', 'chinese')
         
         # 构建基础提示模板
-        system_prompt = f"""你一个专业的文档摘要手。请仔细阅读以下内容，并生成结构化摘要。
+        system_prompt = f"""你是一个专业的文档摘要专家。请仔细阅读以下内容，并生成结构化摘要和关键字。
 
-        [出格式要求]
-        1. 使用标准Markdown格式
-        2. 个段落之间要有空行
-        3. 代码块要使用独的```标并注明语言
-        4. 列表项要使用统一的缩进
-        5. 重要内容使用加粗标记
-        6. 专业术语使用行内代码标记
+        [输出格式要求]
+        请严格按照以下格式输出：
+        1. 首先输出[KEYWORDS]标记
+        2. 然后在新行输出4个关键字，用|分隔
+        3. 再输出[SUMMARY]标记
+        4. 最后输出摘要内容
 
-        [文档结构]
+        [基本要求]
+        - 摘要长度：{target_length}
+        - 目标语言：{target_language}
+        - 关键字数量：必须exactly输出4个关键字
+        - 关键字要简洁且具有代表性
+        - 所有内容使用中文输出
 
-        # 文档摘要分析
-
-        ## 主要任务
-
-        {input_text}
-
-        ## 详细分析
-
-        ### 1. 问题描述
-        - **问题背景**：xxx
-        - **问题现状**：xxx
-        - **解决目标**：xxx
-
-        ### 2. 解决方
-        1. **方案一**：xxx
-           - 具体步骤
-           - 实现方法
-           - 关键代码
-
-        2. **方案二**：xxx
-           - 具体步骤
-           - 实现方法
-           - 关键代码
-
-        ### 3. 代码实现
-        ```python
-        # 示代码
-        def example():
-            # 实现逻辑
-            pass
-        ```
-
-        ### 4. 注意事项
-        - 重要提示1
-        - 重要提示2
-        - 重要提示3
-
-        ## 总结要点
-        1. xxx
-        2. xxx
-        3. xxx
-
-        [注意事项]
-        1. 保持专业性和准确性
-        2. 突出文档的主要观点
-        3. 保持格式的一致性
-        4. 确保代码示例的完整性
-        5. 适当使用加粗和引用格式
-
-        [输出要求]
-        - 语言：{target_language}
-        - 长度：{target_length}
-        - 业程度：{params.get('expertise_level', 'intermediate')}
-        - 风格：{params.get('language_style', 'neutral')}
+        [示例格式]
+        [KEYWORDS]
+        关键词1|关键词2|关键词3|关键词4
+        [SUMMARY]
+        这里是摘要正文内容...
         """
         
         content = f"""
@@ -463,37 +445,81 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         """
         
         print("调用远程 Ollama API...")
+        # 使用非流式响应以确保完整性
         response = client.generate(
             model='qwen2.5:3b',
             prompt=system_prompt + content,
-            stream=True
+            stream=False
         )
         
-        def generate():
-            complete_summary = []
-            for chunk in response:
-                if chunk and 'response' in chunk:
-                    chunk_text = chunk['response']
-                    complete_summary.append(chunk_text)
-                    yield f"data: {chunk_text}\n\n"
+        if not response or 'response' not in response:
+            raise Exception("API 返回的数据格式不正确")
             
-            # 流式输出完成后，保存完整的摘要到数据库
-            if file_info:
-                with app.app_context():
-                    try:
-                        full_summary = ''.join(complete_summary)
-                        if not full_summary.strip():
-                            print("警告生成的摘要为空")
-                            return
-                        
-                        save_result = save_summary_to_db(file_info, full_summary, params, file_content)
-                        if save_result:
-                            print("摘要存成功")
-                        else:
-                            print("摘要保存失败")
-                    except Exception as e:
-                        print(f"保存摘要失败: {str(e)}")
-                    
+        full_response = response['response']
+        print("收到完整响应：", full_response[:100], "...")  # 打印响应的前100个字符
+        
+        # 解析关键字和摘要
+        keywords = None
+        summary_text = None
+        
+        # 分离关键字和摘要
+        try:
+            # 使用更严格的解析逻辑
+            if '[KEYWORDS]' in full_response and '[SUMMARY]' in full_response:
+                # 提取关键字部分
+                keywords_section = full_response.split('[KEYWORDS]')[1].split('[SUMMARY]')[0].strip()
+                # 提取摘要部分
+                summary_text = full_response.split('[SUMMARY]')[1].strip()
+                
+                # 确保关键字格式正确
+                if '|' in keywords_section:
+                    keywords = keywords_section
+                    print(f"成功提取关键字: {keywords}")
+                else:
+                    print("关键字格式不正确，尝试修复...")
+                    # 尝试清理和规范化关键字
+                    cleaned_keywords = keywords_section.replace('\n', '').replace('，', '|').replace(',', '|')
+                    if cleaned_keywords:
+                        keywords = cleaned_keywords
+                        print(f"修复后的关键字: {keywords}")
+            else:
+                print("响应中未找到关键字或摘要标记")
+        except Exception as e:
+            print(f"解析关键字时出错: {str(e)}")
+            keywords = None
+        
+        if not summary_text:
+            raise Exception("无法提取摘要内容")
+            
+        print(f"提取的关键字: {keywords}")
+        print(f"提取的摘要(前100字): {summary_text[:100]}...")
+        
+        # 保存到数据库
+        if file_info:
+            try:
+                if keywords:
+                    file_info['keywords'] = keywords
+                save_result = save_summary_to_db(file_info, summary_text, params, file_content)
+                if not save_result:
+                    print("警告：摘要保存失败")
+            except Exception as e:
+                print(f"保存摘要失败: {str(e)}")
+                traceback.print_exc()
+        
+        # 返回流式响应
+        def generate():
+            # 首先输出关键字部分
+            if keywords:
+                yield f"data: [KEYWORDS]\n"
+                yield f"data: {keywords}\n\n"
+            
+            # 然后输出摘要部分
+            yield f"data: [SUMMARY]\n"
+            # 将摘要分段输出
+            for i in range(0, len(summary_text), 100):
+                chunk = summary_text[i:i+100]
+                yield f"data: {chunk}\n\n"
+        
         return Response(
             stream_with_context(generate()),
             mimetype='text/event-stream',
@@ -506,6 +532,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         
     except Exception as e:
         print(f"Ollama API错误: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 def init_admin():
@@ -623,24 +650,40 @@ def get_summaries():
             # 获取文件扩展名
             file_type = os.path.splitext(display_name)[1].lower().lstrip('.') if display_name else 'unknown'
             
-            results.append({
+            # 打印详细的调试信息
+            print(f"\n处理摘要 ID: {summary.id}")
+            print(f"文件名: {display_name}")
+            print(f"关键字: {summary.keywords}")
+            print(f"摘要文本: {summary.summary_text[:100]}...")
+            
+            # 构建结果数据
+            result_data = {
                 'id': summary.id,
-                'file_name': display_name,  # 使用原始文件名
-                'file_type': file_type,  # 添加文件类型
+                'file_name': display_name,
+                'file_type': file_type,
                 'summary_text': summary.summary_text,
                 'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
                 'summary_length': summary.summary_length,
                 'target_language': summary.target_language,
                 'file_size': summary.file_size,
                 'mime_type': summary.mime_type,
-                'has_file': bool(summary.file_content)  # 添加文件是否存在的标志
-            })
+                'has_file': bool(summary.file_content),
+                'keywords': summary.keywords
+            }
             
-        print(f"回 {len(results)} 条摘要记录")
+            print(f"构建的结果数据:")
+            print(f"- ID: {result_data['id']}")
+            print(f"- 文件名: {result_data['file_name']}")
+            print(f"- 关键字: {result_data['keywords']}")
+            
+            results.append(result_data)
+            
+        print(f"\n返回 {len(results)} 条摘要记录")
         return jsonify(results)
         
     except Exception as e:
         print(f"获取摘要列表错误: {str(e)}")
+        traceback.print_exc()  # 打印完整的错误堆栈
         return jsonify({'error': str(e)}), 500
 
 @app.route('/summaries/<int:summary_id>', methods=['GET'])
@@ -777,7 +820,7 @@ def process_document():
         file_content = file.read()
         file.seek(0)  # 重置文件指针
         
-        # 创建临时文���用于读取内容
+        # 创建临时文件用于读取内容
         temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], system_filename)
         file.save(temp_file_path)
         
@@ -903,7 +946,7 @@ def get_file_mime_type(filename):
     return mime_types.get(ext, 'application/octet-stream')
 
 def save_uploaded_file(file, filename):
-    """保存上传的文件��久存储目录"""
+    """保存上传的文件久存储目录"""
     # 生成唯一的文件名
     unique_filename = f"{str(uuid.uuid4())}{os.path.splitext(filename)[1]}"
     file_path = os.path.join(app.config['DOCUMENTS_FOLDER'], unique_filename)
@@ -1192,7 +1235,7 @@ def migrate_existing_data():
             db.session.commit()
             print("数据迁移完成")
     except Exception as e:
-        print(f"数据迁移失��: {str(e)}")
+        print(f"数据迁移失败: {str(e)}")
         db.session.rollback()
 
 @app.route('/admin/users')

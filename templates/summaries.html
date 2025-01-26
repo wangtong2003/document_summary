@@ -84,6 +84,33 @@
             font-size: 0.9rem;
         }
 
+        .keywords-container {
+            margin: 8px 0;
+            min-height: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .keywords-container .badge {
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 5px 12px;
+            border-radius: 15px;
+            background-color: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+            transition: all 0.2s ease;
+        }
+
+        .keywords-container .badge:hover {
+            background-color: #1976d2;
+            color: white;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
         .empty-state {
             text-align: center;
             padding: 3rem;
@@ -285,10 +312,25 @@
                 
                 const html = summaries.map(summary => {
                     console.log('正在渲染摘要:', summary);
+                    console.log('关键字数据:', summary.keywords);
+                    
+                    // 处理关键字显示
+                    let keywordsHtml = '';
+                    if (summary.keywords) {
+                        console.log('处理关键字:', summary.keywords);
+                        const keywordArray = summary.keywords.split('|');
+                        console.log('分割后的关键字数组:', keywordArray);
+                        keywordsHtml = keywordArray
+                            .map(keyword => `<span class="badge">${keyword.trim()}</span>`)
+                            .join('');
+                        console.log('生成的关键字HTML:', keywordsHtml);
+                    }
+                    
                     if (!summary || !summary.id) {
                         console.error('无效的摘要数据:', summary);
                         return '';
                     }
+                    
                     return `
                         <div class="col-md-4 mb-4">
                             <div class="card summary-card h-100">
@@ -299,7 +341,12 @@
                                 </button>
                                 <div class="card-body text-center">
                                     <i class="bi ${getFileIcon(summary.file_type)} file-icon"></i>
-                                    <h5 class="card-title text-truncate">${summary.file_name || '未命名文档'}</h5>
+                                    <h5 class="card-title text-truncate" title="${summary.file_name}">
+                                        ${summary.file_name}
+                                    </h5>
+                                    <div class="keywords-container mb-2">
+                                        ${keywordsHtml}
+                                    </div>
                                     <div class="summary-preview mb-3">
                                         ${summary.summary_text || '无摘要内容'}
                                     </div>
@@ -489,6 +536,11 @@ ${summary.summary_text || '无摘要内容'}
                                 <h5 class="card-title text-truncate" title="${summary.file_name}">
                                     ${summary.file_name}
                                 </h5>
+                                <div class="keywords-container mb-2">
+                                    ${summary.keywords ? summary.keywords.split('|').map(keyword => 
+                                        `<span class="badge">${keyword.trim()}</span>`
+                                    ).join('') : ''}
+                                </div>
                                 <div class="summary-preview mb-3">
                                     ${summary.summary_text}
                                 </div>

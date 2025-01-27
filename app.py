@@ -112,7 +112,8 @@ class DocumentSummary(db.Model):
     mime_type = db.Column(db.String(100))
     original_filename = db.Column(db.String(255))
     display_filename = db.Column(db.String(255))
-    keywords = db.Column(db.String(255))  # 新增关键字字段
+    keywords = db.Column(db.String(255))
+    topic_analysis = db.Column(db.JSON)  # 新增主题分析结果字段
 
     __table_args__ = {
         'mysql_engine': 'InnoDB',
@@ -140,6 +141,7 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         print(f"摘要长度: {len(summary_text) if summary_text else 0}")
         print(f"参数: {params}")
         print(f"关键字: {file_info.get('keywords', '无')}")
+        print(f"主题分析: {file_info.get('topic_analysis', '无')}")
         
         # 计算文件内容的MD5哈希值
         import hashlib
@@ -166,7 +168,8 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 existing_summary.target_language = params.get("target_language")
                 existing_summary.original_filename = original_filename
                 existing_summary.display_filename = display_filename
-                existing_summary.keywords = file_info.get('keywords')  # 更新关键字
+                existing_summary.keywords = file_info.get('keywords')
+                existing_summary.topic_analysis = file_info.get('topic_analysis')  # 保存主题分析结果
                 if file_content:
                     existing_summary.file_content = file_content
                     existing_summary.file_size = len(file_content)
@@ -205,7 +208,8 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                     mime_type=file_info.get('mime_type'),
                     original_filename=original_filename,
                     display_filename=display_filename,
-                    keywords=file_info.get('keywords')  # 保存关键字
+                    keywords=file_info.get('keywords'),
+                    topic_analysis=file_info.get('topic_analysis')  # 保存主题分析结果
                 )
                 db.session.add(new_summary)
                 db.session.flush()  # 获取新插入记录的ID
@@ -783,149 +787,90 @@ def allowed_file(filename):
     # 移除扩展名前的点号再检查
     return extension.lstrip('.') in ALLOWED_EXTENSIONS
 
-def analyze_document_topics(text, num_topics=3, num_keywords=5):
+def analyze_document_topics(text):
     """
-    使用 LDA 进行文档主题分析
+    使用 Ollama API 进行文档主题分析
     """
     try:
         print("\n=== 开始文档主题分析 ===")
         print(f"原始文本长度: {len(text)} 字符")
         
-        # 加载停用词
-        stop_words = set([
-            '的', '了', '和', '是', '就', '都', '而', '及', '与', '着',
-            '或', '一个', '没有', '我们', '你们', '他们', '它们', '这个',
-            '那个', '这些', '那些', '这样', '那样', '之', '的话', '说',
-            '时候', '这', '那', '如果', '但是', '但', '所以', '因为',
-            '由于', '于是', '故而', '因此', '如此', '这么', '那么',
-            '什么', '谁', '哪', '怎么', '怎样', '啊', '呀', '吗', '吧',
-            '啦', '么', '呢', '了', '个', '年', '月', '日', '下', '上',
-            '中', '点', '分', '之', '为', '也', '以', '能', '要', '会',
-            '对', '到', '可以', '这种', '那种', '如何', '只', '每', '各'
-        ])
-
-        # 文本预处理
-        def preprocess_text(text):
-            # 使用精确模式分词
-            words = list(jieba.cut(text, cut_all=False))
-            print(f"分词后得到 {len(words)} 个词")
-            
-            # 过滤规则
-            words = [w.strip() for w in words if w.strip()]  # 去除空白字符
-            words = [w for w in words if len(w) > 1]  # 保留多字词
-            words = [w for w in words if not w.isdigit()]  # 过滤纯数字
-            words = [w for w in words if w not in stop_words]  # 过滤停用词
-            
-            print(f"过滤后剩余 {len(words)} 个词")
-            print("部分词语示例:", words[:20])
-            return words
-
-        # 文本预处理
-        words = preprocess_text(text)
+        client = Client(host='http://localhost:11434')
         
-        # 确保文本长度足够
-        if len(words) < 10:  # 降低最小词数要求
-            print(f"词数太少: {len(words)} < 10")
-            return {
-                'success': False,
-                'error': '文本长度不足以进行主题分析'
-            }
+        # 构建提示词
+        system_prompt = """你是一个专业的文档主题分析专家。请分析给定文本的主题分布。
 
-        # 构建词频字典和语料库
-        print("构建词频字典...")
-        dictionary = corpora.Dictionary([words])
-        print(f"初始词典大小: {len(dictionary)}")
-        
-        # 放宽词频过滤条件
-        dictionary.filter_extremes(no_below=1, no_above=1.0)  # 完全放开词频限制
-        print(f"过滤后词典大小: {len(dictionary)}")
-        
-        if len(dictionary) < 5:  # 降低词典大小要求
-            print("词典大小不足")
-            return {
-                'success': False,
-                'error': '有效词汇量不足以进行主题分析'
-            }
-            
-        # 转换为词袋模型
-        corpus = [dictionary.doc2bow(words)]
-        print(f"词袋模型大小: {len(corpus[0])} 个词-频率对")
-        
-        if len(corpus[0]) < 5:  # 降低词袋大小要求
-            print("词袋模型大小不足")
-            return {
-                'success': False,
-                'error': '有效词汇量不足以进行主题分析'
-            }
+        [分析要求]
+        1. 识别出文本中的3-5个主要主题
+        2. 为每个主题提供一个简短的标题
+        3. 计算每个主题的权重占比（总和为100%）
+        4. 为每个主题提供3-5个关键词
+        5. 为每个主题提供一句话描述
 
-        # 使用 TF-IDF 转换
-        tfidf = models.TfidfModel(corpus)
-        corpus_tfidf = tfidf[corpus]
-
-        # 配置 LDA 模型参数
-        num_topics = min(3, max(2, len(dictionary) // 20))  # 调整主题数计算方式
-        print(f"设置主题数: {num_topics}")
-        
-        lda_params = {
-            'num_topics': num_topics,
-            'alpha': 0.1,  # 较小的 alpha 值使主题分布更加集中
-            'eta': 0.01,   # 较小的 eta 值使词分布更加集中
-            'passes': 50,  # 增加迭代次数
-            'random_state': 42,
-            'update_every': 1,
-            'chunksize': 100,
-            'per_word_topics': True,
-            'minimum_probability': 0.01,
-            'iterations': 500  # 增加迭代次数
+        [输出格式]
+        请严格按照以下JSON格式输出：
+        {
+            "topics": [
+                {
+                    "title": "主题标题",
+                    "weight": 权重百分比(数字),
+                    "keywords": ["关键词1", "关键词2", "关键词3"],
+                    "description": "主题描述"
+                }
+            ]
         }
-
-        print("训练LDA模型...")
-        lda_model = models.LdaModel(
-            corpus=corpus_tfidf,
-            id2word=dictionary,
-            **lda_params
+        """
+        
+        content = f"""
+        需要分析的文本内容：
+        <文本>
+        {text}
+        </文本>
+        """
+        
+        print("调用 Ollama API...")
+        response = client.generate(
+            model='qwen2.5:3b',
+            prompt=system_prompt + content,
+            stream=False
         )
-
-        # 获取主题分布
-        topic_distribution = [0] * num_topics
-        doc_topics = lda_model.get_document_topics(corpus_tfidf[0], minimum_probability=0.01)
-        for topic_id, prob in doc_topics:
-            topic_distribution[topic_id] = float(prob)
-
-        # 标准化主题分布概率
-        total_prob = sum(topic_distribution)
-        if total_prob > 0:
-            topic_distribution = [p/total_prob for p in topic_distribution]
-
-        # 获取每个主题的关键词（使用 phi 值）
-        topic_keywords = []
-        for topic_id in range(num_topics):
-            # 获取主题-词分布
-            topic_terms = lda_model.get_topic_terms(topic_id, topn=20)  # 获取更多候选词
-            # 按 phi 值排序并选择最具代表性的词
-            sorted_terms = sorted(topic_terms, key=lambda x: x[1], reverse=True)
-            # 选择前 num_keywords 个词
-            keywords = []
-            term_count = 0
-            for term_id, phi in sorted_terms:
-                if term_count >= num_keywords:
-                    break
-                word = dictionary[term_id]
-                if len(word) > 1 and not word.isdigit():  # 过滤单字词和数字
-                    keywords.append(word)
-                    term_count += 1
-            topic_keywords.append(keywords)
-
-        print("主题分析完成")
-        print(f"主题分布: {topic_distribution}")
-        print(f"主题关键词: {topic_keywords}")
-
-        return {
-            'success': True,
-            'topic_distribution': topic_distribution,
-            'topic_keywords': topic_keywords
-        }
-
+        
+        if not response or 'response' not in response:
+            raise Exception("API 返回的数据格式不正确")
+            
+        # 解析返回的 JSON 字符串
+        try:
+            # 提取 JSON 字符串（可能包含在其他文本中）
+            response_text = response['response']
+            # 查找 JSON 开始和结束的位置
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}') + 1
+            if start_idx == -1 or end_idx == 0:
+                raise Exception("无法在响应中找到有效的 JSON")
+            
+            json_str = response_text[start_idx:end_idx]
+            analysis_result = json.loads(json_str)
+            
+            # 验证返回的数据格式
+            if 'topics' not in analysis_result:
+                raise Exception("返回的数据缺少 topics 字段")
+                
+            # 确保权重总和为 100%
+            total_weight = sum(topic['weight'] for topic in analysis_result['topics'])
+            if total_weight > 0:
+                for topic in analysis_result['topics']:
+                    topic['weight'] = (topic['weight'] / total_weight) * 100
+                    
+            return {
+                'success': True,
+                'topics': analysis_result['topics']
+            }
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON 解析错误: {str(e)}")
+            print(f"原始响应: {response_text}")
+            raise Exception("无法解析主题分析结果")
+            
     except Exception as e:
         print(f"主题分析错误: {str(e)}")
         traceback.print_exc()
@@ -1490,24 +1435,32 @@ def get_user(user_id):
 def analyze_topics(summary_id):
     """获取文档的主题分析"""
     try:
-        print(f"\n=== 开始分析文档主题 ID: {summary_id} ===")
+        print(f"\n=== 获取文档主题分析 ID: {summary_id} ===")
         summary = DocumentSummary.query.get_or_404(summary_id)
         
-        # 使用原始文本进行主题分析
+        # 从数据库获取主题分析结果
+        if summary.topic_analysis:
+            return jsonify({
+                'success': True,
+                'topics': summary.topic_analysis.get('topics', [])
+            })
+        
+        # 如果数据库中没有主题分析结果，进行分析并保存
         topic_analysis = analyze_document_topics(summary.original_text)
+        
+        # 更新数据库中的主题分析结果
+        summary.topic_analysis = topic_analysis
+        db.session.commit()
         
         if not topic_analysis['success']:
             return jsonify({
                 'error': topic_analysis.get('error', '主题分析失败')
             }), 500
             
-        return jsonify({
-            'topic_distribution': topic_analysis['topic_distribution'],
-            'topic_keywords': topic_analysis['topic_keywords']
-        })
+        return jsonify(topic_analysis)
         
     except Exception as e:
-        print(f"主题分析失败: {str(e)}")
+        print(f"获取主题分析失败: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 

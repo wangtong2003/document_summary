@@ -422,27 +422,44 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         target_language = params.get('target_language', 'chinese')
         
         # 构建基础提示模板
-        system_prompt = f"""你是一个专业的文档摘要专家。请仔细阅读以下内容，并生成结构化摘要和关键字。
+        system_prompt = f"""你是一个专业的文档摘要专家。请严格按照以下要求生成摘要：
 
-        [输出格式要求]
+        [分析要求]
+        1. 内容完整性：
+           - 完整概括文档的主要内容和核心观点
+           - 保留文档中的关键论述和重要细节
+           - 确保各个部分的内容比例恰当
+
+        2. 逻辑结构：
+           - 按照"背景介绍 -> 主要内容 -> 核心观点 -> 结论"的顺序组织
+           - 确保段落之间逻辑连贯，过渡自然
+           - 使用恰当的关联词，增强文本的连贯性
+
+        3. 语言表达：
+           - 使用清晰、专业的语言
+           - 保持客观准确的描述
+           - 适当使用专业术语，但要确保易于理解
+
+        4. 摘要长度：{target_length}
+
+        [输出格式]
         请严格按照以下格式输出：
-        1. 首先输出[KEYWORDS]标记
-        2. 然后在新行输出4个关键字，用|分隔
-        3. 再输出[SUMMARY]标记
-        4. 最后输出摘要内容
 
-        [基本要求]
-        - 摘要长度：{target_length}
-        - 目标语言：{target_language}
-        - 关键字数量：必须exactly输出4个关键字
-        - 关键字要简洁且具有代表性
-        - 所有内容使用中文输出
-
-        [示例格式]
         [KEYWORDS]
         关键词1|关键词2|关键词3|关键词4
+
         [SUMMARY]
-        这里是摘要正文内容...
+        <完整的摘要内容>
+
+        [注意事项]
+        1. 摘要必须是完整的段落，不要使用编号或要点
+        2. 确保摘要内容前后连贯，结构完整
+        3. 避免重复和赘述
+        4. 使用{target_language}输出
+        5. 保持专业性的同时确保可读性
+        6. 必须包含文档的核心观点和主要论述
+
+        请直接输出符合上述格式的内容，不要添加任何额外的说明或标记。
         """
         
         content = f"""
@@ -466,54 +483,141 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         full_response = response['response']
         print("收到完整响应：", full_response[:100], "...")  # 打印响应的前100个字符
         
-        # 解析关键字和摘要
-        keywords = None
-        summary_text = None
-        
-        # 分离关键字和摘要
-        try:
-            # 使用更严格的解析逻辑
-            if '[KEYWORDS]' in full_response and '[SUMMARY]' in full_response:
-                # 提取关键字部分
-                keywords_section = full_response.split('[KEYWORDS]')[1].split('[SUMMARY]')[0].strip()
-                # 提取摘要部分
-                summary_text = full_response.split('[SUMMARY]')[1].strip()
-                
-                # 确保关键字格式正确
-                if '|' in keywords_section:
-                    keywords = keywords_section
-                    print(f"成功提取关键字: {keywords}")
-                else:
-                    print("关键字格式不正确，尝试修复...")
-                    # 尝试清理和规范化关键字
-                    cleaned_keywords = keywords_section.replace('\n', '').replace('，', '|').replace(',', '|')
-                    if cleaned_keywords:
-                        keywords = cleaned_keywords
-                        print(f"修复后的关键字: {keywords}")
-            else:
-                print("响应中未找到关键字或摘要标记")
-        except Exception as e:
-            print(f"解析关键字时出错: {str(e)}")
-            keywords = None
-        
-        if not summary_text:
-            raise Exception("无法提取摘要内容")
+        # 使用更严格的解析逻辑
+        if '[KEYWORDS]' not in full_response or '[SUMMARY]' not in full_response:
+            # 尝试修复格式
+            print("尝试修复响应格式...")
             
-        print(f"提取的关键字: {keywords}")
-        print(f"提取的摘要(前100字): {summary_text[:100]}...")
+            # 将响应文本分割成段落
+            paragraphs = [p.strip() for p in full_response.split('\n\n') if p.strip()]
+            fixed_response = []
+            keywords_found = False
+            summary_found = False
+            
+            # 提取可能的关键词
+            for para in paragraphs:
+                # 检查是否包含关键词标记
+                if '关键词' in para or '关键字' in para or '|' in para:
+                    words = []
+                    # 提取包含分隔符的部分
+                    for line in para.split('\n'):
+                        if '|' in line:
+                            words = line.strip().split('|')
+                            break
+                        elif '、' in line or ',' in line or '，' in line:
+                            words = re.split(r'[、,，]', line.strip())
+                            break
+                    
+                    if words:
+                        # 清理关键词
+                        words = [w.strip().strip('[]【】()（）""\'\'') for w in words if w.strip()]
+                        # 确保有4个关键词
+                        while len(words) < 4:
+                            words.append(f"关键词{len(words)+1}")
+                        words = words[:4]  # 只取前4个
+                        fixed_response.extend(['[KEYWORDS]', '|'.join(words)])
+                        keywords_found = True
+                        continue
+            
+            # 如果没有找到关键词，创建默认的
+            if not keywords_found:
+                fixed_response.extend([
+                    '[KEYWORDS]',
+                    '文档分析|内容总结|重点内容|核心要点'
+                ])
+            
+            # 提取摘要内容
+            summary_text = []
+            for para in paragraphs:
+                # 跳过可能的标题和关键词部分
+                if len(para) < 50 or '关键词' in para or '|' in para:
+                    continue
+                if para.startswith('#') or para.startswith('第'):
+                    continue
+                if any(para.startswith(prefix) for prefix in ['一、', '二、', '三、', '1.', '2.', '3.']):
+                    continue
+                summary_text.append(para)
+            
+            if summary_text:
+                fixed_response.extend(['[SUMMARY]', '\n'.join(summary_text)])
+                summary_found = True
+            
+            # 如果没有找到合适的摘要内容，使用所有非关键词段落
+            if not summary_found:
+                fixed_response.extend([
+                    '[SUMMARY]',
+                    '\n'.join([p for p in paragraphs if '|' not in p and len(p) > 50])
+                ])
+            
+            # 组合修复后的响应
+            fixed_response = '\n'.join(fixed_response)
+            
+            if '[KEYWORDS]' not in fixed_response or '[SUMMARY]' not in fixed_response:
+                raise Exception("响应格式错误：无法修复格式")
+            
+            full_response = fixed_response
+            print("修复后的响应格式：", full_response[:200], "...")
+
+        # 提取关键字部分
+        keywords_section = full_response.split('[KEYWORDS]')[1].split('[SUMMARY]')[0].strip()
+        # 提取摘要部分
+        summary_text = full_response.split('[SUMMARY]')[1].strip()
+
+        # 验证和清理关键字
+        if not keywords_section or '|' not in keywords_section:
+            # 尝试从文本中提取关键词
+            print("尝试从文本中提取关键词...")
+            words = keywords_section.replace('，', ',').replace('、', ',').replace(' ', ',').split(',')
+            words = [w.strip() for w in words if w.strip()]
+            if len(words) >= 4:
+                keywords = '|'.join(words[:4])
+            else:
+                # 如果无法提取足够的关键词，使用默认值
+                keywords = "文档|摘要|内容|其他"
+        else:
+            # 清理和验证关键字
+            keywords = keywords_section.replace('\n', '').strip()
+            keyword_list = keywords.split('|')
+            
+            # 验证关键字数量
+            if len(keyword_list) != 4:
+                print(f"警告：关键字数量不正确（{len(keyword_list)}个），尝试修复...")
+                # 如果关键字过多，只取前4个
+                if len(keyword_list) > 4:
+                    keyword_list = keyword_list[:4]
+                # 如果关键字不足，用"其他"补充
+                while len(keyword_list) < 4:
+                    keyword_list.append("其他")
+                keywords = '|'.join(keyword_list)
+                print(f"修复后的关键字: {keywords}")
+
+        # 验证和清理摘要文本
+        if not summary_text or len(summary_text.strip()) < 10:
+            raise Exception("摘要内容无效或过短")
+
+        # 清理摘要文本
+        summary_text = summary_text.replace('\n\n\n', '\n\n').strip()
         
-        # 保存到数据库
+        # 如果摘要以标题格式开始，尝试提取正文
+        if summary_text.startswith('#') or summary_text.startswith('第'):
+            paragraphs = summary_text.split('\n\n')
+            # 找到第一个看起来像正文的段落
+            for para in paragraphs:
+                if len(para.strip()) > 50 and not para.startswith('#') and not para.startswith('第'):
+                    summary_text = para
+                    break
+
+        # 保存处理后的结果
         if file_info:
+            file_info['keywords'] = keywords
             try:
-                if keywords:
-                    file_info['keywords'] = keywords
                 save_result = save_summary_to_db(file_info, summary_text, params, file_content)
                 if not save_result:
                     print("警告：摘要保存失败")
             except Exception as e:
                 print(f"保存摘要失败: {str(e)}")
                 traceback.print_exc()
-        
+
         # 返回流式响应
         def generate():
             # 首先输出关键字部分
@@ -527,7 +631,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
             for i in range(0, len(summary_text), 100):
                 chunk = summary_text[i:i+100]
                 yield f"data: {chunk}\n\n"
-        
+
         return Response(
             stream_with_context(generate()),
             mimetype='text/event-stream',
@@ -537,7 +641,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
                 'X-Accel-Buffering': 'no'
             }
         )
-        
+
     except Exception as e:
         print(f"Ollama API错误: {str(e)}")
         traceback.print_exc()
@@ -798,27 +902,41 @@ def analyze_document_topics(text):
         client = Client(host='http://localhost:11434')
         
         # 构建提示词
-        system_prompt = """你是一个专业的文档主题分析专家。请分析给定文本的主题分布。
+        system_prompt = """你是一个专业的文档主题分析专家。请严格按照以下格式分析文档主题：
+
+        [输出格式示例]
+        {
+            "topics": [
+                {
+                    "title": "深度学习技术",
+                    "weight": 35,
+                    "keywords": ["神经网络", "机器学习", "算法"],
+                    "description": "探讨深度学习在图像识别中的应用"
+                },
+                {
+                    "title": "系统实现",
+                    "weight": 30,
+                    "keywords": ["架构设计", "模块开发", "接口"],
+                    "description": "描述系统的具体实现方法和技术架构"
+                }
+            ]
+        }
 
         [分析要求]
-        1. 识别出文本中的3-5个主要主题
-        2. 为每个主题提供一个简短的标题
+        1. 识别3-5个主要主题
+        2. 为每个主题提供简短标题
         3. 计算每个主题的权重占比（总和为100%）
         4. 为每个主题提供3-5个关键词
         5. 为每个主题提供一句话描述
 
-        [输出格式]
-        请严格按照以下JSON格式输出：
-        {
-            "topics": [
-                {
-                    "title": "主题标题",
-                    "weight": 权重百分比(数字),
-                    "keywords": ["关键词1", "关键词2", "关键词3"],
-                    "description": "主题描述"
-                }
-            ]
-        }
+        [严格要求]
+        1. 必须使用标准JSON格式输出
+        2. 必须包含且仅包含示例中的字段
+        3. 权重必须是数字，不要带百分号
+        4. 不要添加任何其他内容或说明
+        5. 确保JSON格式的完整性和正确性
+
+        请直接输出JSON，不要包含任何其他内容。如果你理解了这些要求，请直接输出符合要求的JSON，不要有任何前缀或后缀说明。
         """
         
         content = f"""
@@ -838,38 +956,99 @@ def analyze_document_topics(text):
         if not response or 'response' not in response:
             raise Exception("API 返回的数据格式不正确")
             
-        # 解析返回的 JSON 字符串
+        # 提取 JSON 字符串
+        response_text = response['response']
+        print("原始响应:", response_text[:200])
+        
         try:
-            # 提取 JSON 字符串（可能包含在其他文本中）
-            response_text = response['response']
-            # 查找 JSON 开始和结束的位置
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}') + 1
-            if start_idx == -1 or end_idx == 0:
-                raise Exception("无法在响应中找到有效的 JSON")
-            
-            json_str = response_text[start_idx:end_idx]
-            analysis_result = json.loads(json_str)
-            
-            # 验证返回的数据格式
-            if 'topics' not in analysis_result:
-                raise Exception("返回的数据缺少 topics 字段")
+            # 首先尝试直接解析
+            analysis_result = json.loads(response_text)
+        except json.JSONDecodeError:
+            print("直接解析失败，尝试提取和修复JSON...")
+            try:
+                # 查找第一个 { 和最后一个 }
+                start_idx = response_text.find('{')
+                end_idx = response_text.rfind('}') + 1
                 
-            # 确保权重总和为 100%
-            total_weight = sum(topic['weight'] for topic in analysis_result['topics'])
-            if total_weight > 0:
-                for topic in analysis_result['topics']:
-                    topic['weight'] = (topic['weight'] / total_weight) * 100
+                if start_idx == -1 or end_idx == 0:
+                    # 如果找不到完整的JSON，尝试从文本中提取信息构建JSON
+                    print("尝试从文本中提取信息构建JSON...")
                     
-            return {
-                'success': True,
-                'topics': analysis_result['topics']
-            }
+                    # 使用正则表达式提取可能的主题信息
+                    topics = []
+                    
+                    # 尝试匹配标题和描述
+                    title_matches = re.finditer(r'[一二三四五六1234567]、([^，。\n]+)', response_text)
+                    descriptions = re.finditer(r'[:：]([^。\n]+)[。\n]', response_text)
+                    
+                    # 提取关键词
+                    keyword_matches = re.finditer(r'[【\[](.*?)[】\]]', response_text)
+                    keywords = [m.group(1).split('、') for m in keyword_matches]
+                    
+                    # 构建主题列表
+                    titles = [m.group(1) for m in title_matches]
+                    descs = [m.group(1) for m in descriptions]
+                    
+                    # 确保至少有3个主题
+                    while len(titles) < 3:
+                        titles.append(f"主题{len(titles)+1}")
+                    
+                    # 构建主题列表
+                    total_topics = min(5, len(titles))  # 最多5个主题
+                    base_weight = 100 // total_topics
+                    remaining_weight = 100 - (base_weight * total_topics)
+                    
+                    for i in range(total_topics):
+                        topic = {
+                            "title": titles[i] if i < len(titles) else f"主题{i+1}",
+                            "weight": base_weight + (1 if i < remaining_weight else 0),
+                            "keywords": keywords[i][:3] if i < len(keywords) else [f"关键词{j+1}" for j in range(3)],
+                            "description": descs[i] if i < len(descs) else f"这是{titles[i]}的描述"
+                        }
+                        topics.append(topic)
+                    
+                    analysis_result = {"topics": topics}
+                else:
+                    # 提取JSON部分
+                    json_str = response_text[start_idx:end_idx]
+                    # 清理可能的格式问题
+                    json_str = re.sub(r',\s*}', '}', json_str)
+                    json_str = re.sub(r',\s*]', ']', json_str)
+                    analysis_result = json.loads(json_str)
+            except Exception as e:
+                print(f"JSON提取和修复失败: {str(e)}")
+                # 创建一个基本的分析结果
+                analysis_result = {
+                    "topics": [
+                        {
+                            "title": "主要内容",
+                            "weight": 60,
+                            "keywords": ["文档", "内容", "分析"],
+                            "description": "文档的主要内容和核心观点"
+                        },
+                        {
+                            "title": "补充信息",
+                            "weight": 40,
+                            "keywords": ["细节", "说明", "补充"],
+                            "description": "文档的补充信息和详细说明"
+                        }
+                    ]
+                }
+        
+        # 验证和规范化结果
+        if 'topics' not in analysis_result:
+            raise Exception("返回的数据缺少 topics 字段")
             
-        except json.JSONDecodeError as e:
-            print(f"JSON 解析错误: {str(e)}")
-            print(f"原始响应: {response_text}")
-            raise Exception("无法解析主题分析结果")
+        # 确保权重总和为 100%
+        total_weight = sum(topic['weight'] for topic in analysis_result['topics'])
+        if total_weight > 0:
+            for topic in analysis_result['topics']:
+                topic['weight'] = round((topic['weight'] / total_weight) * 100, 1)
+                
+        return {
+            'success': True,
+            'topics': analysis_result['topics']
+        }
             
     except Exception as e:
         print(f"主题分析错误: {str(e)}")

@@ -531,6 +531,7 @@
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let accumulatedText = '';
+                let currentSection = '';  // 用于跟踪当前正在处理的部分
                 
                 // 清空现有内容
                 chatBody.innerHTML = '';
@@ -538,31 +539,55 @@
                 messageDiv.className = 'markdown-content';
                 chatBody.appendChild(messageDiv);
 
-                while (true) {
-                    const {value, done} = await reader.read();
-                    if (done) break;
-                    
-                    const text = decoder.decode(value);
-                    const lines = text.split('\n');
-                    
-                    lines.forEach(line => {
-                        if (line.startsWith('data: ')) {
-                            const content = line.slice(6);
-                            if (content) {
-                                accumulatedText += content;
-                                // 使用markdown-it渲染内容
-                                messageDiv.innerHTML = md.render(accumulatedText);
+                // 只创建摘要容器
+                const summaryDiv = document.createElement('div');
+                summaryDiv.className = 'summary-section';
+                messageDiv.appendChild(summaryDiv);
+
+                try {
+                    while (true) {
+                        const {value, done} = await reader.read();
+                        if (done) break;
+                        
+                        const text = decoder.decode(value);
+                        const lines = text.split('\n');
+                        
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                const content = line.slice(6).trim();
                                 
-                                // 应用代码高亮
-                                messageDiv.querySelectorAll('pre code').forEach((block) => {
-                                    hljs.highlightBlock(block);
-                                });
+                                if (content === '[KEYWORDS]') {
+                                    currentSection = 'keywords';
+                                    continue;
+                                } else if (content === '[SUMMARY]') {
+                                    currentSection = 'summary';
+                                    continue;
+                                }
+
+                                // 只处理摘要部分
+                                if (currentSection === 'summary' && content) {
+                                    accumulatedText += content;
+                                    summaryDiv.innerHTML = md.render(accumulatedText);
+                                    
+                                    // 应用代码高亮
+                                    summaryDiv.querySelectorAll('pre code').forEach((block) => {
+                                        hljs.highlightBlock(block);
+                                    });
+                                }
                                 
                                 // 自动滚动到底部
                                 chatBody.scrollTop = chatBody.scrollHeight;
                             }
                         }
-                    });
+                    }
+                } catch (error) {
+                    console.error('处理响应流时出错:', error);
+                    messageDiv.innerHTML = `
+                        <div class="alert alert-danger">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                            处理响应时出错: ${error.message}
+                        </div>
+                    `;
                 }
             }
 

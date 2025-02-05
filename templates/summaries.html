@@ -492,8 +492,10 @@
                     let keywordsHtml = '';
                     if (summary.keywords) {
                         console.log('处理关键字:', summary.keywords);
-                        const keywordArray = summary.keywords.split('|');
-                        console.log('分割后的关键字数组:', keywordArray);
+                        const keywordArray = Array.isArray(summary.keywords) 
+                            ? summary.keywords 
+                            : summary.keywords.split('|');
+                        console.log('处理后的关键字数组:', keywordArray);
                         keywordsHtml = keywordArray
                             .map(keyword => `<span class="badge">${keyword.trim()}</span>`)
                             .join('');
@@ -519,7 +521,13 @@
                                         ${summary.file_name}
                                     </h5>
                                     <div class="keywords-container mb-2">
-                                        ${keywordsHtml}
+                                        ${summary.keywords ? (Array.isArray(summary.keywords) 
+                                            ? summary.keywords.map(keyword => 
+                                                `<span class="badge">${keyword.trim()}</span>`
+                                            ).join('')
+                                            : summary.keywords.split('|').map(keyword => 
+                                                `<span class="badge">${keyword.trim()}</span>`
+                                            ).join('')) : ''}
                                     </div>
                                     <div class="summary-preview mb-3">
                                         ${summary.summary_text || '无摘要内容'}
@@ -791,9 +799,13 @@ ${summary.summary_text || '无摘要内容'}
                                     ${summary.file_name}
                                 </h5>
                                 <div class="keywords-container mb-2">
-                                    ${summary.keywords ? summary.keywords.split('|').map(keyword => 
-                                        `<span class="badge">${keyword.trim()}</span>`
-                                    ).join('') : ''}
+                                    ${summary.keywords ? (Array.isArray(summary.keywords) 
+                                        ? summary.keywords.map(keyword => 
+                                            `<span class="badge">${keyword.trim()}</span>`
+                                        ).join('')
+                                        : summary.keywords.split('|').map(keyword => 
+                                            `<span class="badge">${keyword.trim()}</span>`
+                                        ).join('')) : ''}
                                 </div>
                                 <div class="summary-preview mb-3">
                                     ${summary.summary_text}

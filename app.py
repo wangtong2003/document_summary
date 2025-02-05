@@ -1,12 +1,12 @@
 import pymysql
 pymysql.install_as_MySQLdb()
 
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory
 from flask_session import Session  # 添加 Flask-Session 导入
 import asyncio
 from ollama import Client
 import os
-import PyPDF2
+import fitz  # PyMuPDF
 from docx import Document
 import markdown
 import ebooklib
@@ -48,9 +48,13 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'docx', 'doc', 'md', 'epub'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['DOCUMENTS_FOLDER'] = DOCUMENTS_FOLDER  # 新增配置
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 修改为 200MB
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json; charset=utf8mb4'
+
+# 添加分块上传的配置
+app.config['MAX_CONTENT_LENGTH'] = None  # 禁用全局限制
+app.config['MAX_FILE_SIZE'] = 200 * 1024 * 1024  # 修改为 200MB 单文件限制
 
 # MySQL配置
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:20030221@localhost/document_summary?charset=utf8mb4'
@@ -60,7 +64,12 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 3600,
     'pool_pre_ping': True,
     'pool_timeout': 30,
-    'max_overflow': 5
+    'max_overflow': 5,
+    'connect_args': {
+        'connect_timeout': 3600,
+        'read_timeout': 3600,
+        'write_timeout': 3600
+    }
 }
 
 # Session 配置
@@ -95,6 +104,21 @@ class User(db.Model):
     def __repr__(self):
         return f'<User {self.username}>'
 
+class FileChunk(db.Model):
+    __tablename__ = 'file_chunks'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    document_id = db.Column(db.Integer, db.ForeignKey('document_summaries.id', ondelete='CASCADE'), nullable=False)
+    chunk_index = db.Column(db.Integer, nullable=False)
+    chunk_data = db.Column(db.LargeBinary(length=10 * 1024 * 1024), nullable=False)  # 10MB per chunk
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    
+    __table_args__ = {
+        'mysql_engine': 'InnoDB',
+        'mysql_charset': 'utf8mb4',
+        'mysql_collate': 'utf8mb4_unicode_ci'
+    }
+
 class DocumentSummary(db.Model):
     __tablename__ = 'document_summaries'
     
@@ -107,14 +131,20 @@ class DocumentSummary(db.Model):
     updated_at = db.Column(db.DateTime, onupdate=datetime.utcnow)
     summary_length = db.Column(db.String(20))
     target_language = db.Column(db.String(20))
-    file_content = db.Column(db.LargeBinary(length=(2**32)-1))
+    file_content = db.Column(db.LargeBinary(length=10*1024*1024))  # 小文件直接存储（<=10MB）
+    is_chunked = db.Column(db.Boolean, default=False)  # 是否使用分块存储
+    total_chunks = db.Column(db.Integer, default=0)  # 总块数
     file_size = db.Column(db.BigInteger)
     mime_type = db.Column(db.String(100))
     original_filename = db.Column(db.String(255))
     display_filename = db.Column(db.String(255))
     keywords = db.Column(db.String(255))
-    topic_analysis = db.Column(db.JSON)  # 新增主题分析结果字段
-
+    topic_analysis = db.Column(db.JSON)
+    
+    # 关联文件块
+    chunks = db.relationship('FileChunk', backref='document', lazy='dynamic',
+                           cascade='all, delete-orphan')
+    
     __table_args__ = {
         'mysql_engine': 'InnoDB',
         'mysql_charset': 'utf8mb4',
@@ -132,6 +162,64 @@ class FileMapping(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     summary = db.relationship('DocumentSummary', backref=db.backref('file_mappings', lazy=True))
+
+def save_file_content(summary, file_content):
+    """保存文件内容，根据大小决定是否分块存储"""
+    if file_content is None:
+        return
+        
+    file_size = len(file_content)
+    CHUNK_SIZE = 10 * 1024 * 1024  # 10MB
+    
+    # 删除现有的chunks（如果有的话）
+    FileChunk.query.filter_by(document_id=summary.id).delete()
+    
+    # 小文件（<=10MB）直接存储在主表中
+    if file_size <= CHUNK_SIZE:
+        summary.file_content = file_content
+        summary.file_size = file_size
+        db.session.commit()
+        return
+        
+    # 大文件分块存储
+    summary.file_content = None  # 清空主表的file_content字段
+    summary.file_size = file_size
+    db.session.commit()
+    
+    # 计算需要的块数
+    chunk_count = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+    
+    # 分块存储
+    for i in range(chunk_count):
+        start = i * CHUNK_SIZE
+        end = min(start + CHUNK_SIZE, file_size)
+        chunk_data = file_content[start:end]
+        
+        chunk = FileChunk(
+            document_id=summary.id,
+            chunk_index=i,
+            chunk_data=chunk_data
+        )
+        db.session.add(chunk)
+    
+    db.session.commit()
+
+def get_file_content(summary_id):
+    """获取文件内容，自动处理分块存储的情况"""
+    summary = DocumentSummary.query.get(summary_id)
+    if not summary:
+        return None
+        
+    # 如果文件内容直接存储在主表中
+    if summary.file_content is not None:
+        return summary.file_content
+        
+    # 获取所有分块并按顺序拼接
+    chunks = FileChunk.query.filter_by(document_id=summary_id).order_by(FileChunk.chunk_index).all()
+    if not chunks:
+        return None
+        
+    return b''.join(chunk.chunk_data for chunk in chunks)
 
 def save_summary_to_db(file_info, summary_text, params, file_content=None):
     """保存或更新文档摘要到MySQL"""
@@ -153,7 +241,7 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         
         print(f"原始文件名: {original_filename}")
         print(f"显示文件名: {display_filename}")
-        
+
         # 检查是否已存在相同文件的摘要
         existing_summary = DocumentSummary.query.filter_by(
             file_hash=file_hash
@@ -169,9 +257,9 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 existing_summary.original_filename = original_filename
                 existing_summary.display_filename = display_filename
                 existing_summary.keywords = file_info.get('keywords')
-                existing_summary.topic_analysis = file_info.get('topic_analysis')  # 保存主题分析结果
+                existing_summary.topic_analysis = file_info.get('topic_analysis')
                 if file_content:
-                    existing_summary.file_content = file_content
+                    save_file_content(existing_summary, file_content)
                     existing_summary.file_size = len(file_content)
                     existing_summary.mime_type = file_info.get('mime_type')
                 existing_summary.updated_at = datetime.now()
@@ -203,16 +291,19 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                     original_text=file_info["original_text"],
                     summary_length=params.get("summary_length"),
                     target_language=params.get("target_language"),
-                    file_content=file_content,
                     file_size=len(file_content) if file_content else None,
                     mime_type=file_info.get('mime_type'),
                     original_filename=original_filename,
                     display_filename=display_filename,
                     keywords=file_info.get('keywords'),
-                    topic_analysis=file_info.get('topic_analysis')  # 保存主题分析结果
+                    topic_analysis=file_info.get('topic_analysis')
                 )
                 db.session.add(new_summary)
                 db.session.flush()  # 获取新插入记录的ID
+                
+                # 保存文件内容
+                if file_content:
+                    save_file_content(new_summary, file_content)
                 
                 # 创建文件名映射
                 new_mapping = FileMapping(
@@ -403,249 +494,280 @@ def generate_summary(text):
         print(f"生成摘要时发生错误: {str(e)}")
         raise Exception(f"生成摘要失败: {str(e)}")
 
+def get_file_mime_type(filename):
+    """获取文件的MIME类型"""
+    mime_types = {
+        '.pdf': 'application/pdf',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.doc': 'application/msword',
+        '.txt': 'text/plain',
+        '.md': 'text/markdown',
+        '.epub': 'application/epub+zip'
+    }
+    ext = os.path.splitext(filename)[1].lower()
+    return mime_types.get(ext, 'application/octet-stream')
+
+@app.route('/process_document', methods=['POST'])
+def process_document():
+    """处理上传的文档并生成摘要"""
+    try:
+        print("\n=== 开始处理文档 ===")
+        
+        if 'file' not in request.files:
+            return jsonify({'error': '没有上传文件'}), 400
+            
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': '未选择文件'}), 400
+            
+        # 检查文件大小
+        file.seek(0, 2)  # 移动到文件末尾
+        file_size = file.tell()  # 获取文件大小
+        file.seek(0)  # 重置文件指针
+        
+        if file_size > app.config['MAX_FILE_SIZE']:
+            return jsonify({
+                'error': f'文件大小超过限制，最大允许 {app.config["MAX_FILE_SIZE"] // (1024 * 1024)}MB'
+            }), 413
+            
+        # 获取并打印所有参数
+        params = {
+            'summary_length': request.form.get('summary_length', 'medium'),
+            'target_language': request.form.get('target_language', 'chinese'),
+            'summary_style': request.form.get('summary_style'),
+            'focus_area': request.form.get('focus_area'),
+            'expertise_level': request.form.get('expertise_level'),
+            'language_style': request.form.get('language_style')
+        }
+        print("接收到的参数:", params)
+        
+        # 保存原始文件名
+        original_filename = file.filename
+        print(f"原始文件名: {original_filename}")
+        
+        # 检查文件类型
+        if not allowed_file(original_filename):
+            print(f"文件扩展名检查失败: {original_filename}")
+            return jsonify({'error': '不支持的文件格式'}), 400
+        
+        # 生成系统文件名
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        _, ext = os.path.splitext(original_filename)
+        system_filename = f"document_{timestamp}{ext}"
+        print(f"系统文件名: {system_filename}")
+        
+        # 分块读取文件内容
+        file_content = bytearray()
+        chunk_size = 8192  # 8KB chunks
+        while True:
+            chunk = file.read(chunk_size)
+            if not chunk:
+                break
+            file_content.extend(chunk)
+        
+        file.seek(0)  # 重置文件指针
+        
+        # 创建临时文件用于读取内容
+        temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], system_filename)
+        file.save(temp_file_path)
+        
+        try:
+            # 读取文档内容
+            text = read_document(temp_file_path)
+            print(f"成功读取文档内容，长度: {len(text)} 字符")
+            
+            # 进行主题分析
+            topic_analysis = analyze_document_topics(text)
+            print("主题分析完成")
+            
+            # 准备文件信息
+            file_info = {
+                'filename': system_filename,
+                'original_filename': original_filename,
+                'original_text': text,
+                'mime_type': get_file_mime_type(original_filename),
+                'topic_analysis': topic_analysis
+            }
+            
+            # 生成摘要并保存
+            return ollama_text(text, params, file_info, bytes(file_content))
+            
+        finally:
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+                
+    except Exception as e:
+        print(f"处理文档时发生错误: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'error': f'处理文档失败: {str(e)}'}), 500
+
 def ollama_text(input_text, params=None, file_info=None, file_content=None):
     try:
         client = Client(host='http://localhost:11434')
         
-        # 根据参数调整提示词
-        summary_length_map = {
-            'very_short': '约100字',
-            'short': '约200字',
-            'medium': '约500字',
-            'long': '约1000字',
-            'very_long': '约2000字'
-        }
-        
         # 获取参数
         summary_length = params.get('summary_length', 'medium')
-        target_length = summary_length_map.get(summary_length, '约500字')
         target_language = params.get('target_language', 'chinese')
+        summary_style = params.get('summary_style', '')
+        focus_area = params.get('focus_area', '')
+        expertise_level = params.get('expertise_level', '')
+        language_style = params.get('language_style', '')
         
-        # 构建基础提示模板
-        system_prompt = f"""你是一个专业的文档摘要专家。请严格按照以下要求生成摘要：
-
-        [分析要求]
-        1. 内容完整性：
-           - 完整概括文档的主要内容和核心观点
-           - 保留文档中的关键论述和重要细节
-           - 确保各个部分的内容比例恰当
-
-        2. 逻辑结构：
-           - 按照"背景介绍 -> 主要内容 -> 核心观点 -> 结论"的顺序组织
-           - 确保段落之间逻辑连贯，过渡自然
-           - 使用恰当的关联词，增强文本的连贯性
-
-        3. 语言表达：
-           - 使用清晰、专业的语言
-           - 保持客观准确的描述
-           - 适当使用专业术语，但要确保易于理解
-
-        4. 摘要长度：{target_length}
-
-        [输出格式]
-        请严格按照以下格式输出：
-
-        [KEYWORDS]
-        关键词1|关键词2|关键词3|关键词4
-
-        [SUMMARY]
-        <完整的摘要内容>
-
-        [注意事项]
-        1. 摘要必须是完整的段落，不要使用编号或要点
-        2. 确保摘要内容前后连贯，结构完整
-        3. 避免重复和赘述
-        4. 使用{target_language}输出
-        5. 保持专业性的同时确保可读性
-        6. 必须包含文档的核心观点和主要论述
-
-        请直接输出符合上述格式的内容，不要添加任何额外的说明或标记。
+        # 更新字数映射
+        summary_length_map = {
+            'very_short': '100字',
+            'medium': '500字',
+            'long': '2000字',
+            'very_long': '5000字'
+        }
+        
+        target_length = summary_length_map.get(summary_length, '500字')
+        target_word_count = int(target_length.replace('字', ''))
+        
+        # 第一步：分析文档结构和关键信息
+        analysis_prompt = f"""
+        请仔细分析以下文档，并提供详细的文档结构分析：
+        1. 文档的主要主题和核心论点
+        2. 文档的组织结构和各部分关系
+        3. 重要的数据、证据和结论
+        4. 作者的观点和立场
+        5. 关键的术语和概念解释
+        
+        请确保分析全面且准确。
         """
         
-        content = f"""
-        需要总结的文档内容：
-        <文档>
-        {input_text}
-        </文档>
-        """
-        
-        print("调用远程 Ollama API...")
-        # 使用非流式响应以确保完整性
+        print("步骤1: 分析文档...")
         response = client.generate(
             model='qwen2.5:3b',
-            prompt=system_prompt + content,
+            prompt=analysis_prompt + f"\n\n文档内容:\n{input_text}",
             stream=False
         )
+        analysis_result = response['response']
+        print("文档分析完成")
         
-        if not response or 'response' not in response:
-            raise Exception("API 返回的数据格式不正确")
-            
-        full_response = response['response']
-        print("收到完整响应：", full_response[:100], "...")  # 打印响应的前100个字符
-        
-        # 使用更严格的解析逻辑
-        if '[KEYWORDS]' not in full_response or '[SUMMARY]' not in full_response:
-            # 尝试修复格式
-            print("尝试修复响应格式...")
-            
-            # 将响应文本分割成段落
-            paragraphs = [p.strip() for p in full_response.split('\n\n') if p.strip()]
-            fixed_response = []
-            keywords_found = False
-            summary_found = False
-            
-            # 提取可能的关键词
-            for para in paragraphs:
-                # 检查是否包含关键词标记
-                if '关键词' in para or '关键字' in para or '|' in para:
-                    words = []
-                    # 提取包含分隔符的部分
-                    for line in para.split('\n'):
-                        if '|' in line:
-                            words = line.strip().split('|')
-                            break
-                        elif '、' in line or ',' in line or '，' in line:
-                            words = re.split(r'[、,，]', line.strip())
-                            break
-                    
-                    if words:
-                        # 清理关键词
-                        words = [w.strip().strip('[]【】()（）""\'\'') for w in words if w.strip()]
-                        # 确保有4个关键词
-                        while len(words) < 4:
-                            words.append(f"关键词{len(words)+1}")
-                        words = words[:4]  # 只取前4个
-                        fixed_response.extend(['[KEYWORDS]', '|'.join(words)])
-                        keywords_found = True
-                        continue
-            
-            # 如果没有找到关键词，创建默认的
-            if not keywords_found:
-                fixed_response.extend([
-                    '[KEYWORDS]',
-                    '文档分析|内容总结|重点内容|核心要点'
-                ])
-            
-            # 提取摘要内容
-            summary_text = []
-            for para in paragraphs:
-                # 跳过可能的标题和关键词部分
-                if len(para) < 50 or '关键词' in para or '|' in para:
-                    continue
-                if para.startswith('#') or para.startswith('第'):
-                    continue
-                if any(para.startswith(prefix) for prefix in ['一、', '二、', '三、', '1.', '2.', '3.']):
-                    continue
-                summary_text.append(para)
-            
-            if summary_text:
-                fixed_response.extend(['[SUMMARY]', '\n'.join(summary_text)])
-                summary_found = True
-            
-            # 如果没有找到合适的摘要内容，使用所有非关键词段落
-            if not summary_found:
-                fixed_response.extend([
-                    '[SUMMARY]',
-                    '\n'.join([p for p in paragraphs if '|' not in p and len(p) > 50])
-                ])
-            
-            # 组合修复后的响应
-            fixed_response = '\n'.join(fixed_response)
-            
-            if '[KEYWORDS]' not in fixed_response or '[SUMMARY]' not in fixed_response:
-                raise Exception("响应格式错误：无法修复格式")
-            
-            full_response = fixed_response
-            print("修复后的响应格式：", full_response[:200], "...")
+        # 第二步：生成初始摘要
+        summary_prompt = f"""
+        你是一个专业的文档摘要专家。请基于以下文档分析结果，生成一个完整的文档摘要：
 
-        # 提取关键字部分
-        keywords_section = full_response.split('[KEYWORDS]')[1].split('[SUMMARY]')[0].strip()
-        # 提取摘要部分
-        summary_text = full_response.split('[SUMMARY]')[1].strip()
+        [文档分析结果]
+        {analysis_result}
 
-        # 验证和清理关键字
-        if not keywords_section or '|' not in keywords_section:
-            # 尝试从文本中提取关键词
-            print("尝试从文本中提取关键词...")
-            words = keywords_section.replace('，', ',').replace('、', ',').replace(' ', ',').split(',')
-            words = [w.strip() for w in words if w.strip()]
-            if len(words) >= 4:
-                keywords = '|'.join(words[:4])
-            else:
-                # 如果无法提取足够的关键词，使用默认值
-                keywords = "文档|摘要|内容|其他"
-        else:
-            # 清理和验证关键字
-            keywords = keywords_section.replace('\n', '').strip()
-            keyword_list = keywords.split('|')
-            
-            # 验证关键字数量
-            if len(keyword_list) != 4:
-                print(f"警告：关键字数量不正确（{len(keyword_list)}个），尝试修复...")
-                # 如果关键字过多，只取前4个
-                if len(keyword_list) > 4:
-                    keyword_list = keyword_list[:4]
-                # 如果关键字不足，用"其他"补充
-                while len(keyword_list) < 4:
-                    keyword_list.append("其他")
-                keywords = '|'.join(keyword_list)
-                print(f"修复后的关键字: {keywords}")
+        摘要要求：
+        1. 字数要求：必须严格控制在{target_word_count}字，允许上下浮动5%
+        2. 语言风格：{language_style}
+        3. 专业程度：{expertise_level}
+        4. 重点关注：{focus_area}
+        5. 表达方式：{summary_style}
+        6. 内容要求：
+           - 必须包含文档的核心观点和主要论据
+           - 保持逻辑连贯性和完整性
+           - 使用恰当的过渡词连接各部分
+           - 避免重复和冗余内容
+           - 确保每个段落都有清晰的主题句
+        7. 格式要求：
+           - 分段清晰，每段都有明确的主题
+           - 使用适当的标点符号
+           - 避免出现断句或不完整的句子
 
-        # 验证和清理摘要文本
-        if not summary_text or len(summary_text.strip()) < 10:
-            raise Exception("摘要内容无效或过短")
+        注意：
+        1. 字数要求是硬性指标，必须严格执行
+        2. 实际字数必须在{int(target_word_count * 0.95)}到{int(target_word_count * 1.05)}字之间
+        3. 如果生成的摘要不符合要求，将被要求重新生成
 
-        # 清理摘要文本
-        summary_text = summary_text.replace('\n\n\n', '\n\n').strip()
-        
-        # 如果摘要以标题格式开始，尝试提取正文
-        if summary_text.startswith('#') or summary_text.startswith('第'):
-            paragraphs = summary_text.split('\n\n')
-            # 找到第一个看起来像正文的段落
-            for para in paragraphs:
-                if len(para.strip()) > 50 and not para.startswith('#') and not para.startswith('第'):
-                    summary_text = para
-                    break
+        请直接输出摘要内容，不要包含任何额外说明。
+        """
 
-        # 保存处理后的结果
-        if file_info:
-            file_info['keywords'] = keywords
-            try:
-                save_result = save_summary_to_db(file_info, summary_text, params, file_content)
-                if not save_result:
-                    print("警告：摘要保存失败")
-            except Exception as e:
-                print(f"保存摘要失败: {str(e)}")
-                traceback.print_exc()
-
-        # 返回流式响应
-        def generate():
-            # 首先输出关键字部分
-            if keywords:
-                yield f"data: [KEYWORDS]\n"
-                yield f"data: {keywords}\n\n"
-            
-            # 然后输出摘要部分
-            yield f"data: [SUMMARY]\n"
-            # 将摘要分段输出
-            for i in range(0, len(summary_text), 100):
-                chunk = summary_text[i:i+100]
-                yield f"data: {chunk}\n\n"
-
-        return Response(
-            stream_with_context(generate()),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no'
+        print("步骤2: 生成初始摘要...")
+        response = client.generate(
+            model='qwen2.5:3b',
+            prompt=summary_prompt + f"\n\n原始文档:\n{input_text}",
+            stream=False,
+            options={
+                'temperature': 0.7,
+                'top_p': 0.9,
+                'num_predict': target_word_count * 2  # 确保有足够的生成长度
             }
         )
+        initial_summary = response['response']
+        print("初始摘要生成完成")
+
+        # 第三步：检查和修正
+        check_prompt = f"""
+        请检查以下摘要是否满足所有要求，并给出具体的评分和建议：
+
+        [摘要内容]
+        {initial_summary}
+
+        检查项目：
+        1. 字数统计：
+           - 目标字数：{target_word_count}
+           - 允许范围：{int(target_word_count * 0.95)}到{int(target_word_count * 1.05)}字
+           - 实际字数：(请计算)
+        2. 内容完整性 (1-10分)
+        3. 逻辑连贯性 (1-10分)
+        4. 语言表达 (1-10分)
+        5. 格式规范 (1-10分)
+
+        如果任何一项不满足要求，请给出具体的修改建议。
+        特别是字数要求必须严格执行。
+        """
+
+        print("步骤3: 检查摘要...")
+        response = client.generate(
+            model='qwen2.5:3b',
+            prompt=check_prompt,
+            stream=False
+        )
+        check_result = response['response']
+        print("摘要检查完成")
+
+        # 如果检查结果表明需要修改，则进行修正
+        if "不满足要求" in check_result or "需要修改" in check_result:
+            correction_prompt = f"""
+            请根据以下检查结果修正摘要：
+
+            [原始摘要]
+            {initial_summary}
+
+            [检查结果]
+            {check_result}
+
+            请生成修正后的摘要，确保：
+            1. 严格遵守字数要求：{target_word_count}字（允许±5%）
+            2. 修正所有被指出的问题
+            3. 保持内容的完整性和连贯性
+            4. 符合所有格式和风格要求
+
+            请直接输出修正后的摘要，不要包含任何额外说明。
+            """
+
+            print("步骤4: 修正摘要...")
+            response = client.generate(
+                model='qwen2.5:3b',
+                prompt=correction_prompt,
+                stream=False,
+                options={
+                    'temperature': 0.7,
+                    'top_p': 0.9,
+                    'num_predict': target_word_count * 2
+                }
+            )
+            final_summary = response['response']
+            print("摘要修正完成")
+        else:
+            final_summary = initial_summary
+
+        # 保存到数据库
+        if file_info:
+            save_summary_to_db(file_info, final_summary, params, file_content)
+
+        # 直接返回摘要文本
+        return final_summary
 
     except Exception as e:
-        print(f"Ollama API错误: {str(e)}")
+        print(f"生成摘要时发生错误: {str(e)}")
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        raise e
 
 def init_admin():
     """初始化管理员账户"""
@@ -748,10 +870,31 @@ def summary_library():
 
 @app.route('/summaries')
 def get_summaries():
-    """获取所有摘要列表"""
+    """获取所有摘要列表（分页）"""
     try:
         print("\n=== 开始获取摘要列表 ===")
-        summaries = DocumentSummary.query.order_by(DocumentSummary.created_at.desc()).all()
+        
+        # 获取分页参数
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        
+        # 限制每页数量
+        if per_page > 50:
+            per_page = 50
+            
+        # 查询总数
+        total = DocumentSummary.query.count()
+        
+        # 分页查询
+        pagination = DocumentSummary.query.order_by(
+            DocumentSummary.created_at.desc()
+        ).paginate(
+            page=page,
+            per_page=per_page,
+            error_out=False
+        )
+        
+        summaries = pagination.items
         print(f"查询到 {len(summaries)} 条摘要记录")
         
         results = []
@@ -779,8 +922,10 @@ def get_summaries():
                 'target_language': summary.target_language,
                 'file_size': summary.file_size,
                 'mime_type': summary.mime_type,
-                'has_file': bool(summary.file_content),
-                'keywords': summary.keywords
+                'has_file': bool(summary.file_content or summary.is_chunked),
+                'is_chunked': summary.is_chunked,
+                'total_chunks': summary.total_chunks,
+                'keywords': summary.keywords.split('|') if summary.keywords else []
             }
             
             print(f"构建的结果数据:")
@@ -790,7 +935,21 @@ def get_summaries():
             
             results.append(result_data)
             
+        # 构建分页信息
+        pagination_info = {
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'pages': pagination.pages,
+            'has_prev': pagination.has_prev,
+            'has_next': pagination.has_next,
+            'prev_num': pagination.prev_num if pagination.has_prev else None,
+            'next_num': pagination.next_num if pagination.has_next else None
+        }
+            
         print(f"\n返回 {len(results)} 条摘要记录")
+        
+        # 即使没有数据也返回有效的JSON格式
         return jsonify(results)
         
     except Exception as e:
@@ -839,46 +998,42 @@ def delete_summary(summary_id):
             
         print(f"找到摘要记录: {summary.file_name}")
         
-        try:
-            # 删除关联的文件映射记录
-            mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
-            if mappings:
-                print(f"删除 {len(mappings)} 个关联的文件映射记录")
-                for mapping in mappings:
-                    db.session.delete(mapping)
-            else:
-                print("没有找到关联的文件映射记录")
-            
-            # 删除摘要记录
-            print("删除摘要记录")
-            db.session.delete(summary)
-            
-            # 提交事务
-            db.session.commit()
-            print(f"摘要删除成功")
-            
-            return jsonify({'message': '删除成功'})
-            
-        except Exception as e:
-            print(f"删除过程中出错: {str(e)}")
-            db.session.rollback()
-            return jsonify({'error': f'删除失败: {str(e)}'}), 500
+        # 删除关联的文件映射记录
+        mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
+        if mappings:
+            print(f"删除 {len(mappings)} 个关联的文件映射记录")
+            for mapping in mappings:
+                db.session.delete(mapping)
+        else:
+            print("没有找到关联的文件映射记录")
+        
+        # 删除摘要记录
+        print("删除摘要记录")
+        db.session.delete(summary)
+        
+        # 提交事务
+        db.session.commit()
+        print(f"摘要删除成功")
+        
+        return jsonify({'message': '删除成功'})
             
     except Exception as e:
-        print(f"删除摘要时出错: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        print(f"删除过程中出错: {str(e)}")
+        db.session.rollback()
+        return jsonify({'error': f'删除失败: {str(e)}'}), 500
 
 @app.route('/favicon.ico')
 def favicon():
-    return '', 204
+    return send_from_directory(os.path.join(app.root_path, 'static'),
+                             'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 def sanitize_filename(filename):
-    """安全地处理文件名，保中文字符"""
+    """安全地处理文件名，保留中文字符"""
     # 移除文件名中的特殊字符，但保留中文字符
     name, ext = os.path.splitext(filename)
-    # 只保留中文、英文、数字和下划
+    # 只保留中文、英文、数字和下划线
     name = re.sub(r'[^\w\u4e00-\u9fff-]', '_', name)
-    # 确保文件名不空
+    # 确保文件名不为空
     if not name:
         name = 'document'
     return name + ext
@@ -892,9 +1047,7 @@ def allowed_file(filename):
     return extension.lstrip('.') in ALLOWED_EXTENSIONS
 
 def analyze_document_topics(text):
-    """
-    使用 Ollama API 进行文档主题分析
-    """
+    """使用 Ollama API 进行文档主题分析"""
     try:
         print("\n=== 开始文档主题分析 ===")
         print(f"原始文本长度: {len(text)} 字符")
@@ -1058,558 +1211,6 @@ def analyze_document_topics(text):
             'error': str(e)
         }
 
-@app.route('/process_document', methods=['POST'])
-def process_document():
-    """处理上传的文档并生成摘要"""
-    try:
-        print("\n=== 开始处理文档 ===")
-        
-        if 'file' not in request.files:
-            return jsonify({'error': '没有上传文件'}), 400
-            
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': '未选择文件'}), 400
-            
-        params = {
-            'summary_length': request.form.get('summary_length', 'medium'),
-            'target_language': request.form.get('target_language', 'chinese'),
-            'summary_style': request.form.get('summary_style'),
-            'focus_area': request.form.get('focus_area'),
-            'expertise_level': request.form.get('expertise_level'),
-            'language_style': request.form.get('language_style')
-        }
-        
-        # 保存原始文件名（不进行任何处理）
-        original_filename = file.filename
-        print(f"原始文件名: {original_filename}")
-        
-        # 检查文件类型
-        if not allowed_file(original_filename):
-            print(f"文件扩展名检查失败: {original_filename}")
-            return jsonify({'error': '不支持的文件格式'}), 400
-        
-        # 生成系统文件名（用于内部存储）
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        _, ext = os.path.splitext(original_filename)  # 从原始文件名获取扩展名
-        system_filename = f"document_{timestamp}{ext}"  # 使用通用前缀
-        print(f"系统文件名: {system_filename}")
-        
-        # 读取文件内容
-        file_content = file.read()
-        file.seek(0)  # 重置文件指针
-        
-        # 创建临时文件用于读取内容
-        temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], system_filename)
-        file.save(temp_file_path)
-        
-        try:
-            # 读取文档内容
-            text = read_document(temp_file_path)
-            
-            # 进行主题分析
-            topic_analysis = analyze_document_topics(text)
-            
-            # 准备文件信息
-            file_info = {
-                'filename': system_filename,
-                'original_filename': original_filename,
-                'original_text': text,
-                'mime_type': get_file_mime_type(original_filename),
-                'topic_analysis': topic_analysis  # 添加主题分析结果
-            }
-            
-            # 生成摘要并保存
-            return ollama_text(text, params, file_info, file_content)
-            
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-                
-    except Exception as e:
-        print(f"处理文档时发生错误: {str(e)}")
-        return jsonify({'error': f'处理文档失败: {str(e)}'}), 500
-
-class ChineseTokenizer:
-    def __call__(self, text):
-        return list(jieba.cut(text))
-
-def search_summaries(query, summaries, top_k=5):
-    """
-    用TF-IDF和余弦相似度进行智能检索
-    """
-    if not summaries:
-        return []
-        
-    # 准备文档集合
-    documents = [summary.summary_text for summary in summaries]
-    documents.append(query)  # 将查询添加到文档集合中
-    
-    # 创建TF-IDF向量化器，使用自定义的中文分词器
-    vectorizer = TfidfVectorizer(
-        tokenizer=ChineseTokenizer(),
-        stop_words='english',  # 移除英文停用词
-        max_features=5000  # 限制特征数量
-    )
-    
-    try:
-        # 转换文档为TF-IDF矩阵
-        tfidf_matrix = vectorizer.fit_transform(documents)
-        
-        # 计算查询（最后一个文档）与其他文档的余弦相似度
-        cosine_similarities = cosine_similarity(
-            tfidf_matrix[-1:], tfidf_matrix[:-1]
-        ).flatten()
-        
-        # 获取相似度最高的档索引
-        top_indices = np.argsort(cosine_similarities)[::-1][:top_k]
-        
-        # 构建结果列表
-        results = []
-        for idx in top_indices:
-            if cosine_similarities[idx] > 0:  # 只返回相似度大于0的结果
-                summary = summaries[idx]
-                results.append({
-                    'id': summary.id,
-                    'file_name': summary.original_filename or summary.display_filename or summary.file_name,
-                    'summary_text': summary.summary_text,
-                    'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                    'similarity_score': float(cosine_similarities[idx]),
-                    'summary_length': summary.summary_length,
-                    'target_language': summary.target_language,
-                    'original_filename': summary.original_filename,
-                    'display_filename': summary.display_filename
-                })
-        
-        return results
-    except Exception as e:
-        print(f"搜索过程中出错: {str(e)}")
-        return []
-
-@app.route('/api/search', methods=['POST'])
-def search_api():
-    """智能检索API端点"""
-    try:
-        data = request.get_json()
-        query = data.get('query', '').strip()
-        
-        if not query:
-            return jsonify({'error': '搜索查询不能为空'}), 400
-            
-        # 获取所有摘要
-        summaries = DocumentSummary.query.all()
-        
-        # 执行智能检索
-        results = search_summaries(query, summaries)
-        
-        # 确保使用原始文件名
-        for result in results:
-            result['file_name'] = result.get('original_filename') or result.get('display_filename') or result.get('file_name')
-        
-        return jsonify({
-            'results': results,
-            'total': len(results)
-        })
-        
-    except Exception as e:
-        print(f"搜索API错误: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-def get_file_mime_type(filename):
-    """获取件的MIME类型"""
-    mime_types = {
-        '.pdf': 'application/pdf',
-        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        '.doc': 'application/msword',
-        '.txt': 'text/plain',
-        '.md': 'text/markdown',
-        '.epub': 'application/epub+zip'
-    }
-    ext = os.path.splitext(filename)[1].lower()
-    return mime_types.get(ext, 'application/octet-stream')
-
-def save_uploaded_file(file, filename):
-    """保存上传的文件久存储目录"""
-    # 生成唯一的文件名
-    unique_filename = f"{str(uuid.uuid4())}{os.path.splitext(filename)[1]}"
-    file_path = os.path.join(app.config['DOCUMENTS_FOLDER'], unique_filename)
-    file.save(file_path)
-    return file_path, unique_filename
-
-def convert_docx_to_html(file_path):
-    """将Word文档转换为HTML"""
-    try:
-        doc = Document(file_path)
-        html_content = ['<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:Arial,sans-serif;line-height:1.6;padding:20px;}</style></head><body>']
-        
-        for paragraph in doc.paragraphs:
-            if paragraph.text:
-                style = paragraph.style.name
-                if style.startswith('Heading'):
-                    level = style[-1]
-                    html_content.append(f'<h{level}>{paragraph.text}</h{level}>')
-                else:
-                    html_content.append(f'<p>{paragraph.text}</p>')
-        
-        for table in doc.tables:
-            html_content.append('<table border="1" style="border-collapse:collapse;margin:10px 0;">')
-            for row in table.rows:
-                html_content.append('<tr>')
-                for cell in row.cells:
-                    html_content.append(f'<td style="padding:8px;">{cell.text}</td>')
-                html_content.append('</tr>')
-            html_content.append('</table>')
-            
-        html_content.append('</body></html>')
-        return '\n'.join(html_content)
-    except Exception as e:
-        print(f"转换Word文档时出错: {str(e)}")
-        raise
-
-def convert_epub_to_html(file_path):
-    """将EPUB转换为HTML"""
-    try:
-        book = epub.read_epub(file_path)
-        html_content = ['<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family:Arial,sans-serif;line-height:1.6;padding:20px;}</style></head><body>']
-        
-        for item in book.get_items():
-            if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                soup = BeautifulSoup(item.get_content(), 'html.parser')
-                # 提取并保留原有的HTML构
-                for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'img']):
-                    html_content.append(str(element))
-        
-        html_content.append('</body></html>')
-        return '\n'.join(html_content)
-    except Exception as e:
-        print(f"转换EPUB出错: {str(e)}")
-        raise
-
-@app.route('/preview/<int:summary_id>')
-def preview_file(summary_id):
-    """预览始文档"""
-    try:
-        summary = DocumentSummary.query.get_or_404(summary_id)
-        
-        if not summary.file_content:
-            return jsonify({'error': '找不到文件内容'}), 404
-            
-        # 使用原始文件名作为显示名称
-        display_name = summary.original_filename or summary.display_filename or summary.file_name
-        print(f"预览文件: {display_name}")
-            
-        # 创建内存文件对象
-        file_stream = BytesIO(summary.file_content)
-        
-        # 根据文件类型处理预览
-        if summary.mime_type == 'application/pdf':
-            response = send_file(
-                file_stream,
-                mimetype='application/pdf',
-                as_attachment=False,
-                download_name=display_name
-            )
-            # 添加响应头，确保文件名正确显示
-            response.headers['Content-Disposition'] = f'inline; filename*=UTF-8\'\'{quote(display_name)}'
-            response.headers['Content-Type'] = 'application/pdf'
-            return response
-            
-        elif summary.mime_type in ['text/plain', 'text/markdown']:
-            # 对于文本文件，直接读取内容
-            text_content = file_stream.read().decode('utf-8')
-            if summary.mime_type == 'text/markdown':
-                html_content = markdown.markdown(text_content)
-                response = make_response(f'''
-                <!DOCTYPE html>
-                <html lang="zh-CN">
-                <head>
-                    <meta charset="UTF-8">
-                    <title>{display_name}</title>
-                    <style>
-                        body {{
-                            font-family: Arial, sans-serif;
-                            line-height: 1.6;
-                            padding: 20px;
-                            max-width: 800px;
-                            margin: 0 auto;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <h1>{display_name}</h1>
-                    {html_content}
-                </body>
-                </html>
-                ''')
-                response.headers['Content-Type'] = 'text/html; charset=utf-8'
-                return response
-            else:
-                response = make_response(f'''
-                <!DOCTYPE html>
-                <html lang="zh-CN">
-                <head>
-                    <meta charset="UTF-8">
-                    <title>{display_name}</title>
-                    <style>
-                        body {{
-                            font-family: monospace;
-                            white-space: pre-wrap;
-                            padding: 20px;
-                            max-width: 800px;
-                            margin: 0 auto;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <h1>{display_name}</h1>
-                    <pre>{text_content}</pre>
-                </body>
-                </html>
-                ''')
-                response.headers['Content-Type'] = 'text/html; charset=utf-8'
-                return response
-            
-        elif summary.mime_type in ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword']:
-            try:
-                # 创建临时文件
-                temp_file = BytesIO(summary.file_content)
-                doc = Document(temp_file)
-                
-                html_content = [f'''<!DOCTYPE html>
-                <html lang="zh-CN">
-                <head>
-                    <meta charset="UTF-8">
-                    <title>{display_name}</title>
-                    <style>
-                        body {{
-                            font-family: Arial, sans-serif;
-                            line-height: 1.6;
-                            padding: 20px;
-                            max-width: 800px;
-                            margin: 0 auto;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <h1>{display_name}</h1>
-                ''']
-                
-                for paragraph in doc.paragraphs:
-                    if paragraph.text:
-                        style = paragraph.style.name
-                        if style.startswith('Heading'):
-                            level = style[-1]
-                            html_content.append(f'<h{level}>{paragraph.text}</h{level}>')
-                        else:
-                            html_content.append(f'<p>{paragraph.text}</p>')
-                
-                for table in doc.tables:
-                    html_content.append('<table border="1" style="border-collapse:collapse;margin:10px 0;width:100%;">')
-                    for row in table.rows:
-                        html_content.append('<tr>')
-                        for cell in row.cells:
-                            html_content.append(f'<td style="padding:8px;">{cell.text}</td>')
-                        html_content.append('</tr>')
-                    html_content.append('</table>')
-                    
-                html_content.append('</body></html>')
-                response = make_response('\n'.join(html_content))
-                response.headers['Content-Type'] = 'text/html; charset=utf-8'
-                return response
-            except Exception as e:
-                print(f"Word文档转换错误: {str(e)}")
-                return jsonify({'error': '无法转换Word文档'}), 500
-            
-        elif summary.mime_type == 'application/epub+zip':
-            try:
-                # 创建临时文件
-                temp_file = BytesIO(summary.file_content)
-                book = epub.read_epub(temp_file)
-                
-                html_content = [f'''<!DOCTYPE html>
-                <html lang="zh-CN">
-                <head>
-                    <meta charset="UTF-8">
-                    <title>{display_name}</title>
-                    <style>
-                        body {{
-                            font-family: Arial, sans-serif;
-                            line-height: 1.6;
-                            padding: 20px;
-                            max-width: 800px;
-                            margin: 0 auto;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <h1>{display_name}</h1>
-                ''']
-                
-                for item in book.get_items():
-                    if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                        soup = BeautifulSoup(item.get_content(), 'html.parser')
-                        for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'img']):
-                            html_content.append(str(element))
-                
-                html_content.append('</body></html>')
-                response = make_response('\n'.join(html_content))
-                response.headers['Content-Type'] = 'text/html; charset=utf-8'
-                return response
-            except Exception as e:
-                print(f"EPUB转换错误: {str(e)}")
-                return jsonify({'error': '无法转换EPUB文件'}), 500
-            
-        else:
-            return jsonify({
-                'message': '此类型文件不支持在线预览',
-                'file_type': summary.mime_type
-            }), 400
-            
-    except Exception as e:
-        print(f"预览文件时出错: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/download/<int:summary_id>')
-def download_file(summary_id):
-    """下载原始文档"""
-    try:
-        summary = DocumentSummary.query.get_or_404(summary_id)
-        
-        if not summary.file_content:
-            return jsonify({'error': '找不到文件内容'}), 404
-            
-        # 使用原始文件名或显示文件名
-        display_name = summary.original_filename or summary.display_filename or summary.file_name
-            
-        # 创建临时文件用于下载
-        temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], summary.file_name)
-        with open(temp_file_path, 'wb') as f:
-            f.write(summary.file_content)
-        
-        try:
-            return send_file(
-                temp_file_path,
-                mimetype=summary.mime_type,
-                as_attachment=True,
-                download_name=display_name
-            )
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-        
-    except Exception as e:
-        print(f"下载文件时出错: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-def migrate_existing_data():
-    """迁移现有数据，保所有必要的字段都存在"""
-    try:
-        with app.app_context():
-            summaries = DocumentSummary.query.all()
-            for summary in summaries:
-                if not hasattr(summary, 'file_content'):
-                    summary.file_content = None
-                if not hasattr(summary, 'file_size'):
-                    summary.file_size = None
-                if not hasattr(summary, 'mime_type'):
-                    summary.mime_type = get_file_mime_type(summary.file_name)
-                if not hasattr(summary, 'updated_at'):
-                    summary.updated_at = summary.created_at
-            db.session.commit()
-            print("数据迁移完成")
-    except Exception as e:
-        print(f"数据迁移失败: {str(e)}")
-        db.session.rollback()
-
-@app.route('/admin/users')
-def admin_users():
-    """用户管理页面"""
-    return render_template('admin/users.html')
-
-@app.route('/api/users', methods=['GET'])
-def get_users():
-    """获取用户列表"""
-    try:
-        users = User.query.all()
-        return jsonify([{
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
-        } for user in users])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/users/<user_id>', methods=['DELETE'])
-def delete_user(user_id):
-    """删除用户"""
-    try:
-        user = User.query.get_or_404(user_id)
-        if user.username == 'admin':
-            return jsonify({'error': '不能删除管理员账户'}), 403
-        db.session.delete(user)
-        db.session.commit()
-        return jsonify({'message': '户删除成功'})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/users/<user_id>', methods=['PUT'])
-def update_user(user_id):
-    """更新用户信息"""
-    try:
-        user = User.query.get_or_404(user_id)
-        data = request.get_json()
-        
-        if 'username' in data and data['username'] != user.username:
-            if User.query.filter_by(username=data['username']).first():
-                return jsonify({'error': '用户名已存在'}), 400
-            user.username = data['username']
-            
-        if 'email' in data and data['email'] != user.email:
-            if User.query.filter_by(email=data['email']).first():
-                return jsonify({'error': '邮箱已存在'}), 400
-            user.email = data['email']
-            
-        if 'role' in data and data['role'] != user.role:
-            if user.username == 'admin' and data['role'] != 'admin':
-                return jsonify({'error': '不能修改管理员角色'}), 403
-            user.role = data['role']
-            
-        if 'password' in data and data['password']:
-            user.password = generate_password_hash(data['password'], method='pbkdf2:sha256')
-            
-        db.session.commit()
-        return jsonify({
-            'message': '户信息更新成功',
-            'user': {
-                'id': user.id,
-                'username': user.username,
-                'email': user.email,
-                'role': user.role,
-                'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            }
-        })
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/users/<user_id>', methods=['GET'])
-def get_user(user_id):
-    """获取单个用户信息"""
-    try:
-        user = User.query.get_or_404(user_id)
-        return jsonify({
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S')
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/analyze_topics/<int:summary_id>')
 def analyze_topics(summary_id):
     """获取文档的主题分析"""
@@ -1640,6 +1241,140 @@ def analyze_topics(summary_id):
         
     except Exception as e:
         print(f"获取主题分析失败: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/preview/<int:summary_id>')
+def preview_document(summary_id):
+    """预览文档内容，支持分页加载"""
+    try:
+        print(f"\n=== 预览文档 ID: {summary_id} ===")
+        summary = DocumentSummary.query.get_or_404(summary_id)
+        print(f"找到文档: {summary.file_name}")
+        
+        # 获取分页参数
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 5, type=int)  # 默认每次加载5页
+        print(f"当前页: {page}, 每页数量: {per_page}")
+        
+        # 获取文件类型
+        file_type = os.path.splitext(summary.file_name)[1][1:].lower()
+        print(f"文件类型: {file_type}")
+        
+        # 如果是PDF文件，使用PyMuPDF读取
+        if file_type == 'pdf':
+            # 从数据库获取文件内容
+            file_content = get_file_content(summary.id)
+            if not file_content:
+                raise Exception("无法获取文件内容")
+            print(f"获取到文件内容，大小: {len(file_content)} 字节")
+            
+            # 创建临时文件
+            temp_file = os.path.join(app.config['UPLOAD_FOLDER'], f'temp_{summary.id}.pdf')
+            try:
+                with open(temp_file, 'wb') as f:
+                    f.write(file_content)
+                print(f"临时文件已创建: {temp_file}")
+                
+                # 使用PyMuPDF读取PDF
+                doc = fitz.open(temp_file)
+                total_pages = len(doc)
+                print(f"PDF总页数: {total_pages}")
+                
+                # 计算当前批次要读取的页面范围
+                start_page = (page - 1) * per_page
+                end_page = min(start_page + per_page, total_pages)
+                print(f"读取页面范围: {start_page + 1} - {end_page}")
+                
+                # 读取指定范围的页面
+                current_content = []
+                for page_num in range(start_page, end_page):
+                    try:
+                        print(f"正在读取第 {page_num + 1} 页...")
+                        pdf_page = doc[page_num]
+                        
+                        # 获取页面尺寸
+                        page_rect = pdf_page.rect
+                        
+                        # 提取文本，保持布局
+                        page_text = pdf_page.get_text("text", sort=True)
+                        
+                        if page_text:
+                            # 添加页码标记
+                            page_content = f"=== 第 {page_num + 1} 页 ===\n{page_text}"
+                            current_content.append(page_content)
+                            print(f"第 {page_num + 1} 页内容长度: {len(page_text)}")
+                            print(f"页面内容预览: {page_text[:200]}...")  # 打印前200个字符
+                        else:
+                            print(f"第 {page_num + 1} 页未提取到内容")
+                        
+                    except Exception as e:
+                        print(f"读取第 {page_num + 1} 页时出错: {str(e)}")
+                        traceback.print_exc()
+                        continue
+                
+                # 关闭文档
+                doc.close()
+                
+                # 合并所有页面内容
+                current_content = '\n\n'.join(current_content)
+                print(f"合并后的内容长度: {len(current_content)}")
+                print(f"内容预览: {current_content[:200]}...")  # 打印前200个字符
+                
+                # 如果是AJAX请求，返回JSON格式的分页内容
+                if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                    response_data = {
+                        'content': current_content,
+                        'has_more': end_page < total_pages,
+                        'total_pages': total_pages,
+                        'current_page': page
+                    }
+                    print(f"返回AJAX响应: {str(response_data)[:200]}...")
+                    return jsonify(response_data)
+                
+                # 首次访问返回完整的预览页面
+                print("返回完整预览页面")
+                return render_template('preview.html', 
+                    summary=summary,
+                    initial_content=current_content,
+                    total_pages=total_pages,
+                    file_type=file_type
+                )
+            finally:
+                # 清理临时文件
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+                    print(f"临时文件已删除: {temp_file}")
+        else:
+            # 非PDF文件使用原来的处理方式
+            text_lines = summary.original_text.split('\n')
+            lines_per_page = 50  # 每页显示50行
+            total_pages = (len(text_lines) + lines_per_page - 1) // lines_per_page
+            
+            # 计算当前页的内容
+            start_idx = (page - 1) * lines_per_page * per_page
+            end_idx = min(start_idx + (lines_per_page * per_page), len(text_lines))
+            current_content = '\n'.join(text_lines[start_idx:end_idx])
+            
+            # 如果是AJAX请求，返回JSON格式的分页内容
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                return jsonify({
+                    'content': current_content,
+                    'has_more': end_idx < len(text_lines),
+                    'total_pages': total_pages,
+                    'current_page': page
+                })
+            
+            # 首次访问返回完整的预览页面
+            return render_template('preview.html', 
+                summary=summary,
+                initial_content=current_content,
+                total_pages=total_pages,
+                file_type=file_type
+            )
+        
+    except Exception as e:
+        print(f"预览文档失败: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 

@@ -351,6 +351,20 @@
             background-color: #e5e7eb;
             border: 0;
         }
+
+        .bi-chevron-down, .bi-chevron-up {
+            transition: transform 0.3s ease;
+        }
+        
+        #advancedOptionsBtn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #advancedOptionsBtn i {
+            margin-left: 5px;
+        }
     </style>
 </head>
 <body>
@@ -380,6 +394,7 @@
                 <i class="bi bi-cloud-arrow-up fs-3 mb-2"></i>
                 <p class="mb-0">点击或拖拽文件到这里</p>
                 <small class="text-muted">支持 PDF、Word、TXT、Markdown、EPUB</small>
+                <input type="file" id="file-input" name="file" class="d-none" accept=".pdf,.docx,.doc,.txt,.md,.epub">
             </div>
             <div id="fileInfo" class="mb-3"></div>
             <form id="parameterForm">
@@ -387,10 +402,9 @@
                     <label for="summaryLength" class="form-label">摘要长度</label>
                     <select class="form-select" id="summaryLength">
                         <option value="very_short">超短摘要 (约100字)</option>
-                        <option value="short">简短摘要 (约200字)</option>
                         <option value="medium" selected>中等摘要 (约500字)</option>
-                        <option value="long">详细摘要 (约1000字)</option>
-                        <option value="very_long">完整摘要 (约2000字)</option>
+                        <option value="long">详细摘要 (约2000字)</option>
+                        <option value="very_long">完整摘要 (约5000字)</option>
                     </select>
                 </div>
                 <div class="mb-3">
@@ -409,9 +423,9 @@
                 
                 <div class="mb-3">
                     <button class="btn btn-outline-secondary w-100" type="button" 
-                            data-bs-toggle="collapse" data-bs-target="#advancedOptions" 
-                            aria-expanded="false" aria-controls="advancedOptions">
+                            id="advancedOptionsBtn">
                         <i class="bi bi-gear"></i> 高级选项
+                        <i class="bi bi-chevron-down ms-2"></i>
                     </button>
                 </div>
 
@@ -488,7 +502,8 @@
         </div>
     </div>
 
-    <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.txt,.md,.epub" hidden>
+    <div id="error-message" class="hidden fixed top-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded z-50" role="alert">
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
@@ -530,59 +545,35 @@
             async function handleStreamResponse(response) {
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-                let accumulatedText = '';
-                let currentSection = '';  // 用于跟踪当前正在处理的部分
+                let text = '';
                 
-                // 清空现有内容
-                chatBody.innerHTML = '';
-                const messageDiv = document.createElement('div');
-                messageDiv.className = 'markdown-content';
-                chatBody.appendChild(messageDiv);
-
-                // 只创建摘要容器
-                const summaryDiv = document.createElement('div');
-                summaryDiv.className = 'summary-section';
-                messageDiv.appendChild(summaryDiv);
-
                 try {
+                    // 清空现有内容
+                    chatBody.innerHTML = '';
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'markdown-content';
+                    chatBody.appendChild(messageDiv);
+
                     while (true) {
                         const {value, done} = await reader.read();
                         if (done) break;
                         
-                        const text = decoder.decode(value);
-                        const lines = text.split('\n');
+                        text += decoder.decode(value);
                         
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                const content = line.slice(6).trim();
-                                
-                                if (content === '[KEYWORDS]') {
-                                    currentSection = 'keywords';
-                                    continue;
-                                } else if (content === '[SUMMARY]') {
-                                    currentSection = 'summary';
-                                    continue;
-                                }
-
-                                // 只处理摘要部分
-                                if (currentSection === 'summary' && content) {
-                                    accumulatedText += content;
-                                    summaryDiv.innerHTML = md.render(accumulatedText);
-                                    
-                                    // 应用代码高亮
-                                    summaryDiv.querySelectorAll('pre code').forEach((block) => {
-                                        hljs.highlightBlock(block);
-                                    });
-                                }
-                                
-                                // 自动滚动到底部
-                                chatBody.scrollTop = chatBody.scrollHeight;
-                            }
-                        }
+                        // 直接显示文本内容
+                        messageDiv.innerHTML = md.render(text);
+                        
+                        // 应用代码高亮
+                        messageDiv.querySelectorAll('pre code').forEach((block) => {
+                            hljs.highlightBlock(block);
+                        });
+                        
+                        // 自动滚动到底部
+                        chatBody.scrollTop = chatBody.scrollHeight;
                     }
                 } catch (error) {
                     console.error('处理响应流时出错:', error);
-                    messageDiv.innerHTML = `
+                    chatBody.innerHTML = `
                         <div class="alert alert-danger">
                             <i class="bi bi-exclamation-triangle-fill me-2"></i>
                             处理响应时出错: ${error.message}
@@ -725,7 +716,7 @@
             document.head.appendChild(style);
 
             const uploadArea = document.getElementById('uploadArea');
-            const fileInput = document.getElementById('fileInput');
+            const fileInput = document.getElementById('file-input');
             const fileInfo = document.getElementById('fileInfo');
             const submitBtn = document.getElementById('submitBtn');
             const parameterForm = document.getElementById('parameterForm');
@@ -787,7 +778,8 @@
                             <i class="bi bi-file-earmark-text me-2"></i>
                             <strong>已选择文件：</strong>${file.name}<br>
                             <small class="text-muted">
-                                <i class="bi bi-hdd me-1"></i>文件大小：${fileSizeMB} MB
+                                <i class="bi bi-hdd me-1"></i>文件大小：${fileSizeMB} MB<br>
+                                <i class="bi bi-file-earmark me-1"></i>文件类型：${file.type || '未知'}
                             </small>
                         </div>
                     `;
@@ -871,7 +863,66 @@
                     submitBtn.querySelector('.btn-text').textContent = '生成摘要';
                 }
             };
+
+            // 重写高级选项的折叠逻辑
+            const advancedOptionsBtn = document.getElementById('advancedOptionsBtn');
+            const advancedOptions = document.getElementById('advancedOptions');
+            const chevronIcon = advancedOptionsBtn.querySelector('.bi-chevron-down');
+            
+            // 初始化 Bootstrap 折叠组件
+            const bsCollapse = new bootstrap.Collapse(advancedOptions, {
+                toggle: false
+            });
+            
+            // 按钮点击事件
+            advancedOptionsBtn.addEventListener('click', function() {
+                if (advancedOptions.classList.contains('show')) {
+                    bsCollapse.hide();
+                } else {
+                    bsCollapse.show();
+                }
+            });
+            
+            // 折叠展开事件
+            advancedOptions.addEventListener('show.bs.collapse', function () {
+                chevronIcon.classList.remove('bi-chevron-down');
+                chevronIcon.classList.add('bi-chevron-up');
+            });
+            
+            // 折叠收起事件
+            advancedOptions.addEventListener('hide.bs.collapse', function () {
+                chevronIcon.classList.remove('bi-chevron-up');
+                chevronIcon.classList.add('bi-chevron-down');
+            });
+            
+            // 点击外部区域关闭
+            document.addEventListener('click', function(event) {
+                if (advancedOptions.classList.contains('show') && 
+                    !advancedOptionsBtn.contains(event.target) && 
+                    !advancedOptions.contains(event.target)) {
+                    bsCollapse.hide();
+                }
+            }, true);
+
+            // 阻止折叠面板内部点击事件冒泡
+            advancedOptions.addEventListener('click', function(event) {
+                event.stopPropagation();
+            });
+            
+            // 阻止按钮点击事件冒泡
+            advancedOptionsBtn.addEventListener('click', function(event) {
+                event.stopPropagation();
+            });
         });
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+            setTimeout(() => {
+                errorDiv.classList.add('hidden');
+            }, 5000);
+        }
     </script>
 </body>
 </html>

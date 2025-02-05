@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>预览文档 - {{ summary.file_name }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            padding-top: 60px;
+        }
+        
+        .preview-container {
+            background: white;
+            padding: 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+        
+        .document-content {
+            font-family: 'Times New Roman', serif;
+            line-height: 1.8;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 14px;
+            padding: 30px;
+            tab-size: 4;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+        
+        .loading-spinner {
+            display: none;
+            text-align: center;
+            padding: 2rem;
+        }
+        
+        .load-more-btn {
+            display: none;
+            margin: 1rem auto;
+        }
+        
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+        
+        .progress-bar {
+            transition: width .3s ease;
+        }
+        
+        /* 文件类型特定样式 */
+        .content-pdf {
+            font-family: 'Times New Roman', serif;
+            white-space: pre-wrap;
+            tab-size: 8;
+            letter-spacing: 0.2px;
+            text-align: justify;
+        }
+        
+        .content-md {
+            font-family: 'Consolas', monospace;
+        }
+        
+        .content-txt {
+            font-family: 'Courier New', monospace;
+        }
+        
+        /* 滚动条样式 */
+        .document-content::-webkit-scrollbar {
+            height: 8px;
+            width: 8px;
+        }
+        
+        .document-content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        
+        .document-content::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        
+        .document-content::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        
+        /* 页面分隔符样式 */
+        .page-separator {
+            border-top: 2px dashed #ccc;
+            margin: 30px 0;
+            padding: 20px 0;
+            text-align: center;
+            color: #666;
+            font-weight: bold;
+            background: #f8f9fa;
+        }
+        
+        /* 添加打印样式 */
+        @media print {
+            body {
+                padding-top: 0;
+            }
+            
+            .navbar, .progress, .loading-spinner, .load-more-btn {
+                display: none !important;
+            }
+            
+            .preview-container {
+                box-shadow: none;
+                margin: 0;
+                padding: 0;
+            }
+            
+            .document-content {
+                font-size: 12pt;
+                line-height: 1.5;
+                padding: 0;
+            }
+            
+            .page-separator {
+                page-break-before: always;
+                border-top: none;
+                margin: 0;
+                padding: 20px 0;
+                background: none;
+            }
+        }
+        
+        /* 自定义滚动条 */
+        .document-content::-webkit-scrollbar {
+            height: 8px;
+            width: 8px;
+        }
+        
+        .document-content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+        
+        .document-content::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        
+        .document-content::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        
+        /* 调整内容区域最大宽度 */
+        .container {
+            max-width: 1200px;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg fixed-top">
+        <div class="container">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-file-text me-2"></i>文档预览
+            </a>
+            <div class="d-flex align-items-center">
+                <a href="/summary_library" class="btn btn-outline-primary me-2">
+                    <i class="bi bi-arrow-left"></i> 返回摘要库
+                </a>
+                <button class="btn btn-outline-secondary" onclick="window.print()">
+                    <i class="bi bi-printer"></i> 打印
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- 文档信息 -->
+        <div class="mb-4">
+            <h2>{{ summary.file_name }}</h2>
+            <div class="text-muted">
+                <small class="me-3">
+                    <i class="bi bi-clock"></i> 创建时间：{{ summary.created_at }}
+                </small>
+                <small>
+                    <i class="bi bi-file-text"></i> 文件类型：{{ file_type }}
+                </small>
+            </div>
+        </div>
+
+        <!-- 加载进度条 -->
+        <div class="progress mb-3" style="height: 3px;">
+            <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+        </div>
+
+        <!-- 预览内容 -->
+        <div class="preview-container">
+            <!-- 调试信息 -->
+            <div class="debug-info alert alert-info" style="margin: 1rem;">
+                <h6>调试信息：</h6>
+                <p>文件名：{{ summary.file_name }}</p>
+                <p>文件类型：{{ file_type }}</p>
+                <p>总页数：{{ total_pages }}</p>
+                <p>内容长度：<span id="contentLength">0</span> 字符</p>
+            </div>
+
+            <div class="document-content content-{{ file_type }}">{{ initial_content }}</div>
+            
+            <!-- 加载动画 -->
+            <div class="loading-spinner">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">加载中...</span>
+                </div>
+                <p class="text-muted mt-2">正在加载更多内容...</p>
+            </div>
+            
+            <!-- 加载更多按钮 -->
+            <button class="btn btn-outline-primary load-more-btn">
+                <i class="bi bi-plus-lg"></i> 加载更多
+            </button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const container = document.querySelector('.document-content');
+            const loadingSpinner = document.querySelector('.loading-spinner');
+            const loadMoreBtn = document.querySelector('.load-more-btn');
+            const progressBar = document.querySelector('.progress-bar');
+            const contentLength = document.getElementById('contentLength');
+            
+            // 更新内容长度显示
+            if (container) {
+                contentLength.textContent = container.textContent.length;
+                console.log('初始内容:', container.textContent.substring(0, 200));
+            }
+            
+            let currentPage = 1;
+            let isLoading = false;
+            let hasMore = true;
+            
+            // 更新进度条
+            function updateProgress(current, total) {
+                const progress = (current / total) * 100;
+                progressBar.style.width = `${progress}%`;
+                console.log(`进度更新: ${progress}%`);
+            }
+            
+            // 加载更多内容
+            async function loadMoreContent() {
+                if (isLoading || !hasMore) return;
+                
+                isLoading = true;
+                loadingSpinner.style.display = 'block';
+                loadMoreBtn.style.display = 'none';
+                
+                try {
+                    console.log(`加载第 ${currentPage + 1} 页...`);
+                    const response = await fetch(`/preview/{{ summary.id }}?page=${currentPage + 1}`, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
+                    
+                    if (!response.ok) throw new Error('加载失败');
+                    
+                    const data = await response.json();
+                    console.log('收到数据:', data);
+                    
+                    if (data.content) {
+                        container.innerHTML += '\n' + data.content;
+                        currentPage = data.current_page;
+                        hasMore = data.has_more;
+                        updateProgress(currentPage, data.total_pages);
+                        contentLength.textContent = container.textContent.length;
+                    }
+                    
+                    if (hasMore) {
+                        loadMoreBtn.style.display = 'block';
+                    }
+                } catch (error) {
+                    console.error('加载更多内容失败:', error);
+                    alert('加载更多内容失败，请重试');
+                } finally {
+                    isLoading = false;
+                    loadingSpinner.style.display = 'none';
+                }
+            }
+            
+            // 检测滚动到底部
+            function checkScroll() {
+                const scrollHeight = document.documentElement.scrollHeight;
+                const scrollTop = window.scrollY;
+                const clientHeight = document.documentElement.clientHeight;
+                
+                if (scrollHeight - scrollTop - clientHeight < 200 && !isLoading && hasMore) {
+                    loadMoreContent();
+                }
+            }
+            
+            // 绑定事件
+            window.addEventListener('scroll', checkScroll);
+            loadMoreBtn.addEventListener('click', loadMoreContent);
+            
+            // 初始化
+            updateProgress(1, {{ total_pages }});
+            if ({{ total_pages }} > 1) {
+                loadMoreBtn.style.display = 'block';
+            }
+            
+            // 打印调试信息
+            console.log('页面初始化完成');
+            console.log('总页数:', {{ total_pages }});
+            console.log('文件类型:', '{{ file_type }}');
+        });
+    </script>
+</body>
+</html> 

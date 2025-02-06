@@ -40,6 +40,10 @@ from sklearn.decomposition import LatentDirichletAllocation
 from gensim import corpora, models
 from gensim.models.coherencemodel import CoherenceModel
 import string
+import PyPDF2  # 添加 PyPDF2 导入
+import time
+import sqlalchemy.exc
+from sqlalchemy import inspect  # 修改为从sqlalchemy直接导入inspect
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -60,15 +64,23 @@ app.config['MAX_FILE_SIZE'] = 200 * 1024 * 1024  # 修改为 200MB 单文件限�
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:20030221@localhost/document_summary?charset=utf8mb4'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_size': 10,
-    'pool_recycle': 3600,
-    'pool_pre_ping': True,
-    'pool_timeout': 30,
-    'max_overflow': 5,
+    'pool_size': 10,  # 连接池大小
+    'pool_recycle': 3600,  # 连接回收时间(秒)
+    'pool_pre_ping': True,  # 自动检测连接是否有效
+    'pool_timeout': 30,  # 连接池获取连接的超时时间
+    'max_overflow': 5,  # 连接池最大溢出连接数
     'connect_args': {
-        'connect_timeout': 3600,
-        'read_timeout': 3600,
-        'write_timeout': 3600
+        'connect_timeout': 60,  # 连接超时时间
+        'read_timeout': 60,  # 读取超时时间
+        'write_timeout': 60,  # 写入超时时间
+        'charset': 'utf8mb4',
+        'init_command': "SET time_zone='+00:00'",  # 设置时区
+        'autocommit': True  # 自动提交
+    },
+    'execution_options': {
+        'pool_timeout': 30,
+        'pool_pre_ping': True,
+        'isolation_level': 'READ COMMITTED'  # 设置事务隔离级别
     }
 }
 
@@ -163,46 +175,95 @@ class FileMapping(db.Model):
 
     summary = db.relationship('DocumentSummary', backref=db.backref('file_mappings', lazy=True))
 
+# 添加数据库连接重试装饰器
+def retry_on_db_error(max_retries=3, delay=1):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except sqlalchemy.exc.OperationalError as e:
+                    if "Lost connection" in str(e) and retries < max_retries - 1:
+                        retries += 1
+                        print(f"数据库连接丢失,尝试第{retries}次重连...")
+                        time.sleep(delay)
+                        # 重新初始化数据库连接
+                        db.session.remove()
+                        continue
+                    raise
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# 为关键数据库操作添加重试机制
+@retry_on_db_error()
 def save_file_content(summary, file_content):
-    """保存文件内容，根据大小决定是否分块存储"""
+    """保存文件内容,根据大小决定是否分块存储"""
     if file_content is None:
         return
         
     file_size = len(file_content)
     CHUNK_SIZE = 10 * 1024 * 1024  # 10MB
     
-    # 删除现有的chunks（如果有的话）
-    FileChunk.query.filter_by(document_id=summary.id).delete()
-    
-    # 小文件（<=10MB）直接存储在主表中
-    if file_size <= CHUNK_SIZE:
-        summary.file_content = file_content
+    try:
+        # 确保summary对象绑定到当前session
+        if not db.session.is_active:
+            db.session.begin()
+        
+        # 如果对象是detached状态，重新merge到session
+        if inspect(summary).detached:
+            summary = db.session.merge(summary)
+        
+        # 删除现有的chunks(如果有的话)
+        FileChunk.query.filter_by(document_id=summary.id).delete()
+        
+        # 小文件(<=10MB)直接存储在主表中
+        if file_size <= CHUNK_SIZE:
+            summary.file_content = file_content
+            summary.file_size = file_size
+            db.session.commit()
+            return
+            
+        # 大文件分块存储
+        summary.file_content = None  # 清空主表的file_content字段
         summary.file_size = file_size
         db.session.commit()
-        return
         
-    # 大文件分块存储
-    summary.file_content = None  # 清空主表的file_content字段
-    summary.file_size = file_size
-    db.session.commit()
-    
-    # 计算需要的块数
-    chunk_count = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
-    
-    # 分块存储
-    for i in range(chunk_count):
-        start = i * CHUNK_SIZE
-        end = min(start + CHUNK_SIZE, file_size)
-        chunk_data = file_content[start:end]
+        # 计算需要的块数
+        chunk_count = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+        summary.total_chunks = chunk_count
+        summary.is_chunked = True
+        db.session.commit()
         
-        chunk = FileChunk(
-            document_id=summary.id,
-            chunk_index=i,
-            chunk_data=chunk_data
-        )
-        db.session.add(chunk)
-    
-    db.session.commit()
+        # 分块存储
+        for i in range(chunk_count):
+            start = i * CHUNK_SIZE
+            end = min(start + CHUNK_SIZE, file_size)
+            chunk_data = file_content[start:end]
+            
+            chunk = FileChunk(
+                document_id=summary.id,
+                chunk_index=i,
+                chunk_data=chunk_data
+            )
+            db.session.add(chunk)
+            
+            # 每20个块提交一次，避免事务太大
+            if (i + 1) % 20 == 0 or i == chunk_count - 1:
+                try:
+                    db.session.commit()
+                except Exception as e:
+                    print(f"提交第 {i+1} 个块时出错: {str(e)}")
+                    db.session.rollback()
+                    raise
+        
+    except Exception as e:
+        print(f"保存文件内容时出错: {str(e)}")
+        if db.session.is_active:
+            db.session.rollback()
+        raise
 
 def get_file_content(summary_id):
     """获取文件内容，自动处理分块存储的情况"""
@@ -221,6 +282,7 @@ def get_file_content(summary_id):
         
     return b''.join(chunk.chunk_data for chunk in chunks)
 
+@retry_on_db_error()
 def save_summary_to_db(file_info, summary_text, params, file_content=None):
     """保存或更新文档摘要到MySQL"""
     try:
@@ -228,8 +290,10 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         print(f"文件信息: {file_info}")
         print(f"摘要长度: {len(summary_text) if summary_text else 0}")
         print(f"参数: {params}")
-        print(f"关键字: {file_info.get('keywords', '无')}")
-        print(f"主题分析: {file_info.get('topic_analysis', '无')}")
+        
+        # 确保session处于活动状态
+        if not db.session.is_active:
+            db.session.begin()
         
         # 计算文件内容的MD5哈希值
         import hashlib
@@ -237,19 +301,23 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         
         # 获取原始文件名和显示文件名
         original_filename = file_info.get("original_filename")
-        display_filename = original_filename  # 使用原始文件名作为显示文件名
+        display_filename = original_filename
         
         print(f"原始文件名: {original_filename}")
         print(f"显示文件名: {display_filename}")
 
-        # 检查是否已存在相同文件的摘要
-        existing_summary = DocumentSummary.query.filter_by(
-            file_hash=file_hash
-        ).first()
-        
         try:
+            # 检查是否已存在相同文件的摘要
+            existing_summary = DocumentSummary.query.filter_by(
+                file_hash=file_hash
+            ).first()
+            
             if existing_summary:
                 print(f"更新现有摘要 ID: {existing_summary.id}")
+                # 如果对象是detached状态，重新merge到session
+                if inspect(existing_summary).detached:
+                    existing_summary = db.session.merge(existing_summary)
+                
                 # 更新现有摘要
                 existing_summary.summary_text = summary_text
                 existing_summary.summary_length = params.get("summary_length")
@@ -258,15 +326,28 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 existing_summary.display_filename = display_filename
                 existing_summary.keywords = file_info.get('keywords')
                 existing_summary.topic_analysis = file_info.get('topic_analysis')
+                
+                try:
+                    db.session.commit()
+                except Exception as e:
+                    print(f"提交摘要更新时出错: {str(e)}")
+                    db.session.rollback()
+                    raise
+                
                 if file_content:
                     save_file_content(existing_summary, file_content)
                     existing_summary.file_size = len(file_content)
                     existing_summary.mime_type = file_info.get('mime_type')
+                    db.session.commit()
+                
                 existing_summary.updated_at = datetime.now()
+                db.session.commit()
                 
                 # 更新文件名映射
                 file_mapping = FileMapping.query.filter_by(summary_id=existing_summary.id).first()
                 if file_mapping:
+                    if inspect(file_mapping).detached:
+                        file_mapping = db.session.merge(file_mapping)
                     file_mapping.original_filename = original_filename
                     file_mapping.system_filename = file_info["filename"]
                     file_mapping.display_filename = display_filename
@@ -278,7 +359,6 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                         display_filename=display_filename
                     )
                     db.session.add(new_mapping)
-                
                 db.session.commit()
                 print("摘要更新成功")
             else:
@@ -299,7 +379,13 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                     topic_analysis=file_info.get('topic_analysis')
                 )
                 db.session.add(new_summary)
-                db.session.flush()  # 获取新插入记录的ID
+                
+                try:
+                    db.session.commit()
+                except Exception as e:
+                    print(f"提交新摘要记录时出错: {str(e)}")
+                    db.session.rollback()
+                    raise
                 
                 # 保存文件内容
                 if file_content:
@@ -318,18 +404,25 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
             
             return True
             
+        except sqlalchemy.exc.OperationalError as e:
+            print(f"数据库操作错误: {str(e)}")
+            if db.session.is_active:
+                db.session.rollback()
+            raise
         except Exception as e:
             print(f"数据库操作出错: {str(e)}")
             print(f"完整错误信息: {e.__class__.__name__}: {str(e)}")
             traceback.print_exc()
-            db.session.rollback()
+            if db.session.is_active:
+                db.session.rollback()
             raise
             
     except Exception as e:
         print(f"保存摘要到数据库时出错: {str(e)}")
         print(f"完整错误信息: {e.__class__.__name__}: {str(e)}")
         traceback.print_exc()
-        db.session.rollback()
+        if db.session.is_active:
+            db.session.rollback()
         raise
 
 # 文档处理函数
@@ -338,43 +431,117 @@ def read_pdf(file_path):
     try:
         print(f"开始读取PDF文件: {file_path}")
         text = ""
-        with open(file_path, 'rb') as file:
-            # 创建PDF文件阅读器对象
-            pdf_reader = PyPDF2.PdfReader(file)
-            
-            # 获取PDF页数
-            num_pages = len(pdf_reader.pages)
-            print(f"PDF文件共有 {num_pages} 页")
-            
-            # 遍历每一页并提取文本
-            for page_num in range(num_pages):
-                try:
-                    # 获取页面对象
-                    page = pdf_reader.pages[page_num]
-                    # 提取文本
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n\n"
-                    print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
-                except Exception as e:
-                    print(f"读取第 {page_num + 1} 页时出错: {str(e)}")
-                    continue
-            
-            if not text.strip():
-                raise Exception("未能从PDF中提取任何文本")
+        
+        # 首先尝试使用 PyPDF2
+        try:
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                num_pages = len(pdf_reader.pages)
+                print(f"PDF文件共有 {num_pages} 页")
                 
-            print(f"PDF文件读取完成，总共提取到 {len(text)} 个字符")
-            return text
+                for page_num in range(num_pages):
+                    try:
+                        page = pdf_reader.pages[page_num]
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n\n"
+                        print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
+                    except Exception as e:
+                        print(f"PyPDF2读取第 {page_num + 1} 页时出错: {str(e)}")
+                        continue
+            
+            if text.strip():
+                return text
+                
+            # 如果PyPDF2提取的文本为空，尝试使用fitz (PyMuPDF)
+            print("PyPDF2提取的文本为空，尝试使用PyMuPDF...")
+            raise Exception("PyPDF2提取的文本为空")
+                
+        except Exception as e:
+            print(f"PyPDF2处理失败，尝试使用PyMuPDF: {str(e)}")
+            # 如果PyPDF2失败，使用fitz (PyMuPDF)作为备选
+            with fitz.open(file_path) as doc:
+                num_pages = doc.page_count
+                print(f"PDF文件共有 {num_pages} 页 (PyMuPDF)")
+                
+                for page_num in range(num_pages):
+                    try:
+                        page = doc[page_num]
+                        page_text = page.get_text()
+                        if page_text:
+                            text += page_text + "\n\n"
+                        print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
+                    except Exception as e:
+                        print(f"PyMuPDF读取第 {page_num + 1} 页时出错: {str(e)}")
+                        continue
+        
+        if not text.strip():
+            raise Exception("未能从PDF中提取任何文本")
+            
+        print(f"PDF文件读取完成，总共提取到 {len(text)} 个字符")
+        return text
+        
     except Exception as e:
         print(f"读取PDF文件出错: {str(e)}")
         raise Exception(f"读取PDF文件失败: {str(e)}")
 
 def read_docx(file_path):
-    doc = Document(file_path)
-    text = ''
-    for para in doc.paragraphs:
-        text += para.text + '\n'
-    return text
+    """读取Word文档内容"""
+    try:
+        print(f"开始读取Word文档: {file_path}")
+        
+        # 确保文件存在
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+            
+        # 检查文件扩展名
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lower()
+        
+        if ext == '.doc':
+            # 对于旧版.doc文件，尝试使用其他方法读取
+            try:
+                import win32com.client
+                word = win32com.client.Dispatch("Word.Application")
+                word.Visible = False
+                doc = word.Documents.Open(os.path.abspath(file_path))
+                text = doc.Content.Text
+                doc.Close()
+                word.Quit()
+                return text
+            except Exception as e:
+                print(f"使用win32com读取.doc文件失败: {str(e)}")
+                # 如果win32com失败，返回提示信息
+                return "无法读取旧版Word文档(.doc)，请将文档另存为.docx格式后重试。"
+        
+        # 对于.docx文件使用python-docx
+        doc = Document(file_path)
+        text = []
+        
+        # 提取段落文本
+        for para in doc.paragraphs:
+            if para.text.strip():
+                text.append(para.text)
+                
+        # 提取表格文本
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        text.append(cell.text)
+        
+        # 合并所有文本，使用双换行符分隔
+        result = '\n\n'.join(text)
+        
+        if not result.strip():
+            raise ValueError("文档内容为空")
+            
+        print(f"成功读取Word文档，提取到 {len(result)} 个字符")
+        return result
+        
+    except Exception as e:
+        print(f"读取Word文档时出错: {str(e)}")
+        raise Exception(f"读取Word文档失败: {str(e)}")
 
 def read_txt(file_path):
     """读取文本文件内容"""
@@ -516,21 +683,15 @@ def process_document():
         if 'file' not in request.files:
             return jsonify({'error': '没有上传文件'}), 400
             
-        file = request.files['file']
-        if file.filename == '':
+        files = request.files.getlist('file')  # 获取所有上传的文件
+        if not files or files[0].filename == '':
             return jsonify({'error': '未选择文件'}), 400
             
-        # 检查文件大小
-        file.seek(0, 2)  # 移动到文件末尾
-        file_size = file.tell()  # 获取文件大小
-        file.seek(0)  # 重置文件指针
-        
-        if file_size > app.config['MAX_FILE_SIZE']:
-            return jsonify({
-                'error': f'文件大小超过限制，最大允许 {app.config["MAX_FILE_SIZE"] // (1024 * 1024)}MB'
-            }), 413
+        # 确保上传目录存在
+        if not os.path.exists(app.config['UPLOAD_FOLDER']):
+            os.makedirs(app.config['UPLOAD_FOLDER'])
             
-        # 获取并打印所有参数
+        # 获取参数
         params = {
             'summary_length': request.form.get('summary_length', 'medium'),
             'target_language': request.form.get('target_language', 'chinese'),
@@ -541,60 +702,94 @@ def process_document():
         }
         print("接收到的参数:", params)
         
-        # 保存原始文件名
-        original_filename = file.filename
-        print(f"原始文件名: {original_filename}")
+        results = []  # 存储所有文件的处理结果
         
-        # 检查文件类型
-        if not allowed_file(original_filename):
-            print(f"文件扩展名检查失败: {original_filename}")
-            return jsonify({'error': '不支持的文件格式'}), 400
-        
-        # 生成系统文件名
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        _, ext = os.path.splitext(original_filename)
-        system_filename = f"document_{timestamp}{ext}"
-        print(f"系统文件名: {system_filename}")
-        
-        # 分块读取文件内容
-        file_content = bytearray()
-        chunk_size = 8192  # 8KB chunks
-        while True:
-            chunk = file.read(chunk_size)
-            if not chunk:
-                break
-            file_content.extend(chunk)
-        
-        file.seek(0)  # 重置文件指针
-        
-        # 创建临时文件用于读取内容
-        temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], system_filename)
-        file.save(temp_file_path)
-        
-        try:
-            # 读取文档内容
-            text = read_document(temp_file_path)
-            print(f"成功读取文档内容，长度: {len(text)} 字符")
-            
-            # 进行主题分析
-            topic_analysis = analyze_document_topics(text)
-            print("主题分析完成")
-            
-            # 准备文件信息
-            file_info = {
-                'filename': system_filename,
-                'original_filename': original_filename,
-                'original_text': text,
-                'mime_type': get_file_mime_type(original_filename),
-                'topic_analysis': topic_analysis
-            }
-            
-            # 生成摘要并保存
-            return ollama_text(text, params, file_info, bytes(file_content))
-            
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+        for file in files:
+            try:
+                # 检查文件大小
+                file.seek(0, 2)
+                file_size = file.tell()
+                file.seek(0)
+                
+                if file_size > app.config['MAX_FILE_SIZE']:
+                    results.append({
+                        'filename': file.filename,
+                        'error': f'文件大小超过限制，最大允许 {app.config["MAX_FILE_SIZE"] // (1024 * 1024)}MB'
+                    })
+                    continue
+                
+                # 保存原始文件名
+                original_filename = file.filename
+                print(f"处理文件: {original_filename}")
+                
+                # 检查文件类型
+                if not allowed_file(original_filename):
+                    results.append({
+                        'filename': original_filename,
+                        'error': '不支持的文件格式'
+                    })
+                    continue
+                
+                # 生成安全的文件名
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                _, ext = os.path.splitext(original_filename)
+                system_filename = f"document_{timestamp}_{len(results)}{ext}"
+                
+                # 保存文件
+                temp_file_path = os.path.join(app.config['UPLOAD_FOLDER'], system_filename)
+                file.save(temp_file_path)
+                
+                try:
+                    # 读取文档内容
+                    text = read_document(temp_file_path)
+                    print(f"成功读取文档内容，长度: {len(text)} 字符")
+                    
+                    if not text.strip():
+                        raise ValueError("文档内容为空")
+                    
+                    # 进行主题分析
+                    topic_analysis = analyze_document_topics(text)
+                    print("主题分析完成")
+                    
+                    # 准备文件信息
+                    file_info = {
+                        'filename': system_filename,
+                        'original_filename': original_filename,
+                        'original_text': text,
+                        'mime_type': get_file_mime_type(original_filename),
+                        'topic_analysis': topic_analysis
+                    }
+                    
+                    # 生成摘要
+                    summary = ollama_text(text, params, file_info, file.read())
+                    
+                    results.append({
+                        'filename': original_filename,
+                        'summary': summary,
+                        'success': True
+                    })
+                    
+                finally:
+                    # 清理临时文件
+                    try:
+                        if os.path.exists(temp_file_path):
+                            os.remove(temp_file_path)
+                    except Exception as e:
+                        print(f"清理临时文件失败: {str(e)}")
+                        
+            except Exception as e:
+                print(f"处理文件 {file.filename} 时出错: {str(e)}")
+                results.append({
+                    'filename': file.filename,
+                    'error': str(e),
+                    'success': False
+                })
+                
+        # 返回所有文件的处理结果
+        return jsonify({
+            'message': '文件处理完成',
+            'results': results
+        })
                 
     except Exception as e:
         print(f"处理文档时发生错误: {str(e)}")

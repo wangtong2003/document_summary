@@ -31,7 +31,6 @@ import re
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import jieba
 from flask_migrate import Migrate
 from io import BytesIO
 from urllib.parse import quote
@@ -44,6 +43,15 @@ import PyPDF2  # 添加 PyPDF2 导入
 import time
 import sqlalchemy.exc
 from sqlalchemy import inspect  # 修改为从sqlalchemy直接导入inspect
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredFileLoader
+from langchain.chains import RetrievalQA
+from langchain_community.llms import Ollama
+from langchain_ollama import OllamaEmbeddings
+from typing import List, Dict, Any
+import pickle
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -136,22 +144,26 @@ class DocumentSummary(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     file_name = db.Column(db.String(255), nullable=False)
-    file_hash = db.Column(db.String(32), nullable=False)
-    summary_text = db.Column(db.Text(length=4294967295), nullable=False)
-    original_text = db.Column(db.Text(length=4294967295), nullable=False)
-    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, onupdate=datetime.utcnow)
+    file_hash = db.Column(db.String(32), nullable=True)
+    original_text = db.Column(db.Text(length=16777215), nullable=True)
+    summary_text = db.Column(db.Text(length=16777215), nullable=True)
+    file_content = db.Column(db.LargeBinary(length=16777215), nullable=True)
+    content_vectors = db.Column(db.LargeBinary(length=16777215), nullable=True)
+    summary_vectors = db.Column(db.LargeBinary(length=16777215), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     summary_length = db.Column(db.String(20))
     target_language = db.Column(db.String(20))
-    file_content = db.Column(db.LargeBinary(length=10*1024*1024))  # 小文件直接存储（<=10MB）
-    is_chunked = db.Column(db.Boolean, default=False)  # 是否使用分块存储
-    total_chunks = db.Column(db.Integer, default=0)  # 总块数
     file_size = db.Column(db.BigInteger)
     mime_type = db.Column(db.String(100))
     original_filename = db.Column(db.String(255))
     display_filename = db.Column(db.String(255))
     keywords = db.Column(db.String(255))
     topic_analysis = db.Column(db.JSON)
+    embedding_model = db.Column(db.String(100))
+    chunks_info = db.Column(db.JSON)
+    is_chunked = db.Column(db.Boolean, default=False)  # 添加是否分块存储标志
+    total_chunks = db.Column(db.Integer, default=0)    # 添加总块数字段
     
     # 关联文件块
     chunks = db.relationship('FileChunk', backref='document', lazy='dynamic',
@@ -291,9 +303,8 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         print(f"摘要长度: {len(summary_text) if summary_text else 0}")
         print(f"参数: {params}")
         
-        # 确保session处于活动状态
-        if not db.session.is_active:
-            db.session.begin()
+        # 确保session处于清洁状态
+        db.session.rollback()
         
         # 计算文件内容的MD5哈希值
         import hashlib
@@ -343,6 +354,13 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 existing_summary.updated_at = datetime.now()
                 db.session.commit()
                 
+                # 创建或更新混合向量存储
+                try:
+                    create_hybrid_vector_store(file_info["original_text"], summary_text, existing_summary.id)
+                except Exception as e:
+                    print(f"创建混合向量存储失败: {str(e)}")
+                    # 继续处理，不影响主流程
+                
                 # 更新文件名映射
                 file_mapping = FileMapping.query.filter_by(summary_id=existing_summary.id).first()
                 if file_mapping:
@@ -391,6 +409,24 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 if file_content:
                     save_file_content(new_summary, file_content)
                 
+                # 创建混合向量存储
+                try:
+                    content_store_path, summary_store_path = create_hybrid_vector_store(
+                        new_summary.original_text,
+                        new_summary.summary_text,
+                        new_summary.id
+                    )
+                    
+                    # 将向量存储路径保存到数据库
+                    new_summary.content_vectors = content_store_path.encode()
+                    new_summary.summary_vectors = summary_store_path.encode()
+                    db.session.commit()
+                    print(f"向量存储创建成功，保存在 {content_store_path} 和 {summary_store_path}")
+                except Exception as e:
+                    print(f"创建向量存储失败: {str(e)}")
+                    # 继续处理，不要因为向量存储失败而影响整个摘要保存
+                    pass
+                
                 # 创建文件名映射
                 new_mapping = FileMapping(
                     summary_id=new_summary.id,
@@ -406,23 +442,20 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
             
         except sqlalchemy.exc.OperationalError as e:
             print(f"数据库操作错误: {str(e)}")
-            if db.session.is_active:
-                db.session.rollback()
+            db.session.rollback()
             raise
         except Exception as e:
             print(f"数据库操作出错: {str(e)}")
             print(f"完整错误信息: {e.__class__.__name__}: {str(e)}")
             traceback.print_exc()
-            if db.session.is_active:
-                db.session.rollback()
+            db.session.rollback()
             raise
             
     except Exception as e:
         print(f"保存摘要到数据库时出错: {str(e)}")
         print(f"完整错误信息: {e.__class__.__name__}: {str(e)}")
         traceback.print_exc()
-        if db.session.is_active:
-            db.session.rollback()
+        db.session.rollback()
         raise
 
 # 文档处理函数
@@ -818,146 +851,103 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         
         target_length = summary_length_map.get(summary_length, '500字')
         target_word_count = int(target_length.replace('字', ''))
-        
-        # 第一步：分析文档结构和关键信息
-        analysis_prompt = f"""
-        请仔细分析以下文档，并提供详细的文档结构分析：
-        1. 文档的主要主题和核心论点
-        2. 文档的组织结构和各部分关系
-        3. 重要的数据、证据和结论
-        4. 作者的观点和立场
-        5. 关键的术语和概念解释
-        
-        请确保分析全面且准确。
-        """
-        
-        print("步骤1: 分析文档...")
-        response = client.generate(
-            model='qwen2.5:3b',
-            prompt=analysis_prompt + f"\n\n文档内容:\n{input_text}",
-            stream=False
-        )
-        analysis_result = response['response']
-        print("文档分析完成")
-        
-        # 第二步：生成初始摘要
-        summary_prompt = f"""
-        你是一个专业的文档摘要专家。请基于以下文档分析结果，生成一个完整的文档摘要：
 
-        [文档分析结果]
-        {analysis_result}
+        # 使用思维链提示词
+        chain_of_thought_prompt = f"""你是一个专业的文档摘要专家。请使用以下步骤分析文档并生成摘要：
 
-        摘要要求：
-        1. 字数要求：必须严格控制在{target_word_count}字，允许上下浮动5%
-        2. 语言风格：{language_style}
-        3. 专业程度：{expertise_level}
-        4. 重点关注：{focus_area}
-        5. 表达方式：{summary_style}
-        6. 内容要求：
-           - 必须包含文档的核心观点和主要论据
-           - 保持逻辑连贯性和完整性
-           - 使用恰当的过渡词连接各部分
-           - 避免重复和冗余内容
-           - 确保每个段落都有清晰的主题句
-        7. 格式要求：
-           - 分段清晰，每段都有明确的主题
-           - 使用适当的标点符号
-           - 避免出现断句或不完整的句子
+        [分析步骤]
+        1. 文档结构分析
+        - 识别文档的主要部分和层次结构
+        - 找出每个部分的主题句和关键论点
+        
+        2. 核心内容提取
+        - 提取文档的主要论点和观点
+        - 识别重要的数据、事实和证据
+        - 找出作者的立场和结论
+        
+        3. 关键信息整合
+        - 将相关信息按逻辑关系组织
+        - 确保不同部分之间的连贯性
+        - 保留最具代表性的例子和论据
+        
+        4. 摘要生成
+        - 字数要求：{target_word_count}字(允许±5%)
+        - 语言风格：{language_style}
+        - 专业程度：{expertise_level}
+        - 重点关注：{focus_area}
+        - 表达方式：{summary_style}
+        
+        [输出格式]
+        请按以下格式输出你的分析和摘要：
+
+        [文档分析]
+        1. 文档结构：
+        (分点说明文档的结构特点)
+
+        2. 主要论点：
+        (列出核心论点和观点)
+
+        3. 重要证据：
+        (列出关键的数据和证据)
+
+        [关键词]
+        keyword1|keyword2|keyword3|keyword4
+
+        [摘要]
+        (生成最终的摘要文本)
 
         注意：
-        1. 字数要求是硬性指标，必须严格执行
-        2. 实际字数必须在{int(target_word_count * 0.95)}到{int(target_word_count * 1.05)}字之间
-        3. 如果生成的摘要不符合要求，将被要求重新生成
-
-        请直接输出摘要内容，不要包含任何额外说明。
+        1. 分析过程要清晰可见
+        2. 确保摘要完整、准确、连贯
+        3. 严格控制最终摘要的字数
+        4. 使用恰当的过渡词连接各部分
+        5. 保持客观专业的语言风格
         """
 
-        print("步骤2: 生成初始摘要...")
+        print("调用 Ollama API 生成摘要...")
         response = client.generate(
             model='qwen2.5:3b',
-            prompt=summary_prompt + f"\n\n原始文档:\n{input_text}",
+            prompt=chain_of_thought_prompt + f"\n\n文档内容:\n{input_text}",
             stream=False,
             options={
                 'temperature': 0.7,
                 'top_p': 0.9,
-                'num_predict': target_word_count * 2  # 确保有足够的生成长度
+                'num_predict': target_word_count * 4  # 确保有足够的生成长度
             }
         )
-        initial_summary = response['response']
-        print("初始摘要生成完成")
 
-        # 第三步：检查和修正
-        check_prompt = f"""
-        请检查以下摘要是否满足所有要求，并给出具体的评分和建议：
+        if not response or 'response' not in response:
+            raise Exception("API 返回的数据格式不正确")
+            
+        result = response['response']
+        print("摘要生成完成")
 
-        [摘要内容]
-        {initial_summary}
-
-        检查项目：
-        1. 字数统计：
-           - 目标字数：{target_word_count}
-           - 允许范围：{int(target_word_count * 0.95)}到{int(target_word_count * 1.05)}字
-           - 实际字数：(请计算)
-        2. 内容完整性 (1-10分)
-        3. 逻辑连贯性 (1-10分)
-        4. 语言表达 (1-10分)
-        5. 格式规范 (1-10分)
-
-        如果任何一项不满足要求，请给出具体的修改建议。
-        特别是字数要求必须严格执行。
-        """
-
-        print("步骤3: 检查摘要...")
-        response = client.generate(
-            model='qwen2.5:3b',
-            prompt=check_prompt,
-            stream=False
-        )
-        check_result = response['response']
-        print("摘要检查完成")
-
-        # 如果检查结果表明需要修改，则进行修正
-        if "不满足要求" in check_result or "需要修改" in check_result:
-            correction_prompt = f"""
-            请根据以下检查结果修正摘要：
-
-            [原始摘要]
-            {initial_summary}
-
-            [检查结果]
-            {check_result}
-
-            请生成修正后的摘要，确保：
-            1. 严格遵守字数要求：{target_word_count}字（允许±5%）
-            2. 修正所有被指出的问题
-            3. 保持内容的完整性和连贯性
-            4. 符合所有格式和风格要求
-
-            请直接输出修正后的摘要，不要包含任何额外说明。
-            """
-
-            print("步骤4: 修正摘要...")
-            response = client.generate(
-                model='qwen2.5:3b',
-                prompt=correction_prompt,
-                stream=False,
-                options={
-                    'temperature': 0.7,
-                    'top_p': 0.9,
-                    'num_predict': target_word_count * 2
-                }
-            )
-            final_summary = response['response']
-            print("摘要修正完成")
-        else:
-            final_summary = initial_summary
-
-        # 保存到数据库
-        if file_info:
-            save_summary_to_db(file_info, final_summary, params, file_content)
-
-        # 直接返回摘要文本
-        return final_summary
+        # 提取关键词和摘要文本
+        try:
+            # 提取关键词
+            keywords_match = re.search(r'\[关键词\](.*?)\[摘要\]', result, re.DOTALL)
+            keywords = keywords_match.group(1).strip() if keywords_match else ''
+            
+            # 提取摘要文本
+            summary_match = re.search(r'\[摘要\](.*?)$', result, re.DOTALL)
+            summary_text = summary_match.group(1).strip() if summary_match else result.strip()
+            
+            # 更新文件信息
+            if file_info is not None:
+                file_info['keywords'] = keywords
+            
+            # 保存到数据库
+            if file_info:
+                save_summary_to_db(file_info, summary_text, params, file_content)
+            
+            return summary_text
+            
+        except Exception as e:
+            print(f"提取摘要内容时出错: {str(e)}")
+            # 如果提取失败，返回原始响应
+            if file_info:
+                save_summary_to_db(file_info, result, params, file_content)
+            return result
 
     except Exception as e:
         print(f"生成摘要时发生错误: {str(e)}")
@@ -1100,11 +1090,8 @@ def get_summaries():
             # 获取文件扩展名
             file_type = os.path.splitext(display_name)[1].lower().lstrip('.') if display_name else 'unknown'
             
-            # 打印详细的调试信息
-            print(f"\n处理摘要 ID: {summary.id}")
-            print(f"文件名: {display_name}")
-            print(f"关键字: {summary.keywords}")
-            print(f"摘要文本: {summary.summary_text[:100]}...")
+            # 检查文件是否存在
+            has_file = bool(summary.file_content) or (hasattr(summary, 'is_chunked') and summary.is_chunked)
             
             # 构建结果数据
             result_data = {
@@ -1117,16 +1104,11 @@ def get_summaries():
                 'target_language': summary.target_language,
                 'file_size': summary.file_size,
                 'mime_type': summary.mime_type,
-                'has_file': bool(summary.file_content or summary.is_chunked),
-                'is_chunked': summary.is_chunked,
-                'total_chunks': summary.total_chunks,
+                'has_file': has_file,
+                'is_chunked': getattr(summary, 'is_chunked', False),
+                'total_chunks': getattr(summary, 'total_chunks', 0),
                 'keywords': summary.keywords.split('|') if summary.keywords else []
             }
-            
-            print(f"构建的结果数据:")
-            print(f"- ID: {result_data['id']}")
-            print(f"- 文件名: {result_data['file_name']}")
-            print(f"- 关键字: {result_data['keywords']}")
             
             results.append(result_data)
             
@@ -1144,12 +1126,11 @@ def get_summaries():
             
         print(f"\n返回 {len(results)} 条摘要记录")
         
-        # 即使没有数据也返回有效的JSON格式
         return jsonify(results)
         
     except Exception as e:
         print(f"获取摘要列表错误: {str(e)}")
-        traceback.print_exc()  # 打印完整的错误堆栈
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/summaries/<int:summary_id>', methods=['GET'])
@@ -1572,6 +1553,450 @@ def preview_document(summary_id):
         print(f"预览文档失败: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+def get_embeddings_model():
+    """获取嵌入模型"""
+    try:
+        embeddings = OllamaEmbeddings(
+            base_url="http://localhost:11434",
+            model="snowflake-arctic-embed2"
+        )
+        return embeddings
+    except Exception as e:
+        print(f"加载嵌入模型失败: {str(e)}")
+        traceback.print_exc()
+        raise
+
+def generate_semantic_summary(doc_id, query=None):
+    """生成基于语义检索的摘要"""
+    try:
+        print(f"\n=== 生成语义摘要 文档ID: {doc_id} ===")
+        
+        # 如果没有提供查询，使用默认查询
+        if not query:
+            query = "总结这篇文档的主要内容和关键点"
+            
+        # 获取相关内容
+        relevant_chunks = semantic_search(query, doc_id)
+        
+        # 构建上下文
+        context = "\n\n".join([chunk['content'] for chunk in relevant_chunks])
+        
+        # 使用Ollama生成摘要
+        llm = Ollama(model="qwen2.5:3b")
+        
+        # 构建提示词
+        prompt = f"""基于以下内容生成一个全面的摘要：
+
+        {context}
+
+        要求：
+        1. 摘要应该清晰、连贯
+        2. 突出重要信息和关键观点
+        3. 保持客观性
+        4. 控制在500字左右
+        
+        请直接输出摘要内容，不要包含任何额外说明。
+        """
+        
+        # 生成摘要
+        summary = llm(prompt)
+        
+        return summary.strip()
+        
+    except Exception as e:
+        print(f"生成语义摘要失败: {str(e)}")
+        traceback.print_exc()
+        raise
+
+# 添加新的路由处理语义搜索
+@app.route('/semantic_search/<int:doc_id>', methods=['POST'])
+def handle_semantic_search(doc_id):
+    """处理语义搜索请求"""
+    try:
+        data = request.get_json()
+        query = data.get('query')
+        
+        if not query:
+            return jsonify({'error': '搜索查询不能为空'}), 400
+            
+        results = semantic_search(query, doc_id)
+        return jsonify({
+            'success': True,
+            'results': results
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/semantic_summary/<int:doc_id>', methods=['POST'])
+def handle_semantic_summary(doc_id):
+    """处理语义摘要请求"""
+    try:
+        data = request.get_json()
+        query = data.get('query')
+        
+        summary = generate_semantic_summary(doc_id, query)
+        return jsonify({
+            'success': True,
+            'summary': summary
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+def create_hybrid_vector_store(text, summary_text, doc_id):
+    """创建混合向量存储（正文和摘要）"""
+    try:
+        print(f"\n=== 创建混合向量存储 文档ID: {doc_id} ===")
+        
+        # 获取嵌入模型
+        embeddings = get_embeddings_model()
+        
+        # 1. 处理正文内容
+        content_text = text[:5000]  # 只取前5000字进行向量化
+        content_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            length_function=len,
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?"]
+        )
+        
+        # 分割正文
+        content_chunks = content_splitter.split_text(content_text)
+        print(f"正文分割为 {len(content_chunks)} 个块")
+        
+        # 生成正文向量
+        content_vectors = []
+        for i, chunk in enumerate(content_chunks):
+            vector = embeddings.embed_query(chunk)
+            content_vectors.append({
+                'vector': vector,
+                'text': chunk,
+                'type': 'content',
+                'chunk_idx': i
+            })
+        
+        # 2. 处理摘要内容
+        summary_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=200,
+            chunk_overlap=20,
+            length_function=len,
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?"]
+        )
+        
+        # 分割摘要
+        summary_chunks = summary_splitter.split_text(summary_text)
+        print(f"摘要分割为 {len(summary_chunks)} 个块")
+        
+        # 生成摘要向量
+        summary_vectors = []
+        for i, chunk in enumerate(summary_chunks):
+            vector = embeddings.embed_query(chunk)
+            summary_vectors.append({
+                'vector': vector,
+                'text': chunk,
+                'type': 'summary',
+                'chunk_idx': i
+            })
+        
+        # 序列化向量数据
+        content_data = pickle.dumps(content_vectors)
+        summary_data = pickle.dumps(summary_vectors)
+        
+        # 更新数据库
+        summary = db.session.get(DocumentSummary, doc_id)
+        if summary:
+            summary.content_vectors = content_data
+            summary.summary_vectors = summary_data
+            summary.embedding_model = "snowflake-arctic-embed2"
+            summary.chunks_info = {
+                "content_chunks": len(content_chunks),
+                "summary_chunks": len(summary_chunks),
+                "content_chunk_size": 500,
+                "summary_chunk_size": 200,
+                "content_chunk_overlap": 50,
+                "summary_chunk_overlap": 20
+            }
+            db.session.commit()
+            print("向量数据已保存到数据库")
+        
+        return content_vectors, summary_vectors
+        
+    except Exception as e:
+        print(f"创建混合向量存储失败: {str(e)}")
+        traceback.print_exc()
+        raise
+
+def hybrid_semantic_search(query, doc_id, content_weight=0.6, summary_weight=0.4):
+    """混合语义搜索"""
+    try:
+        print(f"\n=== 执行混合语义搜索 文档ID: {doc_id} ===")
+        
+        # 获取文档摘要
+        summary = db.session.get(DocumentSummary, doc_id)
+        if not summary:
+            raise ValueError(f"未找到ID为 {doc_id} 的文档")
+            
+        # 检查向量数据是否存在
+        if not summary.content_vectors or not summary.summary_vectors:
+            print("向量数据不存在，创建新的向量存储")
+            content_vectors, summary_vectors = create_hybrid_vector_store(
+                summary.original_text, 
+                summary.summary_text, 
+                doc_id
+            )
+        else:
+            # 从数据库加载向量数据
+            content_vectors = pickle.loads(summary.content_vectors)
+            summary_vectors = pickle.loads(summary.summary_vectors)
+        
+        # 获取嵌入模型
+        embeddings = get_embeddings_model()
+        
+        # 生成查询向量
+        query_vector = embeddings.embed_query(query)
+        
+        # 计算相似度并排序
+        results = []
+        
+        # 处理正文向量
+        for item in content_vectors:
+            similarity = cosine_similarity(
+                [query_vector],
+                [item['vector']]
+            )[0][0]
+            results.append({
+                'content': item['text'],
+                'score': (1 - similarity) * content_weight,
+                'type': 'content',
+                'metadata': {
+                    'type': item['type'],
+                    'chunk_idx': item['chunk_idx']
+                }
+            })
+        
+        # 处理摘要向量
+        for item in summary_vectors:
+            similarity = cosine_similarity(
+                [query_vector],
+                [item['vector']]
+            )[0][0]
+            results.append({
+                'content': item['text'],
+                'score': (1 - similarity) * summary_weight,
+                'type': 'summary',
+                'metadata': {
+                    'type': item['type'],
+                    'chunk_idx': item['chunk_idx']
+                }
+            })
+        
+        # 按得分排序（得分越低越相关）
+        results.sort(key=lambda x: x['score'])
+        
+        return results[:5]  # 返回最相关的5个结果
+        
+    except Exception as e:
+        print(f"混合语义搜索失败: {str(e)}")
+        traceback.print_exc()
+        raise
+
+def generate_hybrid_semantic_summary(doc_id, query=None):
+    """生成基于混合语义检索的摘要"""
+    try:
+        print(f"\n=== 生成混合语义摘要 文档ID: {doc_id} ===")
+        
+        # 如果没有提供查询，使用默认查询
+        if not query:
+            query = "总结这篇文档的主要内容和关键点"
+            
+        # 获取相关内容
+        relevant_chunks = hybrid_semantic_search(query, doc_id)
+        
+        # 构建上下文（同时使用正文和摘要的相关内容）
+        context_parts = []
+        
+        # 添加摘要内容
+        summary_chunks = [chunk for chunk in relevant_chunks if chunk['type'] == 'summary']
+        if summary_chunks:
+            context_parts.append("摘要相关内容：")
+            context_parts.extend([chunk['content'] for chunk in summary_chunks])
+        
+        # 添加正文内容
+        content_chunks = [chunk for chunk in relevant_chunks if chunk['type'] == 'content']
+        if content_chunks:
+            context_parts.append("\n\n原文相关内容：")
+            context_parts.extend([chunk['content'] for chunk in content_chunks])
+        
+        context = "\n\n".join(context_parts)
+        
+        # 使用Ollama生成摘要
+        llm = Ollama(model="qwen2.5:3b")
+        
+        # 构建提示词
+        prompt = f"""基于以下内容生成一个全面的摘要：
+
+        {context}
+
+        要求：
+        1. 摘要应该清晰、连贯
+        2. 突出重要信息和关键观点
+        3. 保持客观性
+        4. 控制在500字左右
+        5. 优先使用摘要中的表述，必要时参考原文内容补充细节
+        
+        请直接输出摘要内容，不要包含任何额外说明。
+        """
+        
+        # 生成摘要
+        summary = llm(prompt)
+        
+        return summary.strip()
+        
+    except Exception as e:
+        print(f"生成混合语义摘要失败: {str(e)}")
+        traceback.print_exc()
+        raise
+
+# 修改API路由以使用混合检索
+@app.route('/hybrid_search/<int:doc_id>', methods=['POST'])
+def handle_hybrid_search(doc_id):
+    """处理混合语义搜索请求"""
+    try:
+        data = request.get_json()
+        query = data.get('query')
+        content_weight = data.get('content_weight', 0.6)
+        summary_weight = data.get('summary_weight', 0.4)
+        
+        if not query:
+            return jsonify({'error': '搜索查询不能为空'}), 400
+            
+        results = hybrid_semantic_search(query, doc_id, content_weight, summary_weight)
+        return jsonify({
+            'success': True,
+            'results': results
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/hybrid_summary/<int:doc_id>', methods=['POST'])
+def handle_hybrid_summary(doc_id):
+    """处理混合语义摘要请求"""
+    try:
+        data = request.get_json()
+        query = data.get('query')
+        
+        summary = generate_hybrid_semantic_summary(doc_id, query)
+        return jsonify({
+            'success': True,
+            'summary': summary
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/search', methods=['POST'])
+def search_documents():
+    """搜索文档"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': '请求数据不能为空'}), 400
+            
+        query = data.get('query')
+        if not query:
+            return jsonify({'error': '搜索关键词不能为空'}), 400
+            
+        print(f"\n=== 执行文档语义搜索 关键词: {query} ===")
+        
+        # 获取嵌入模型
+        embeddings = get_embeddings_model()
+        
+        # 生成查询向量
+        query_vector = embeddings.embed_query(query)
+        
+        results = []
+        summaries = DocumentSummary.query.all()
+        
+        for summary in summaries:
+            try:
+                # 检查是否存在向量数据
+                if not summary.content_vectors or not summary.summary_vectors:
+                    # 如果不存在，创建向量存储
+                    print(f"为文档 {summary.id} 创建向量存储")
+                    create_hybrid_vector_store(summary.original_text, summary.summary_text, summary.id)
+                    continue
+                
+                # 从数据库加载向量数据
+                content_vectors = pickle.loads(summary.content_vectors)
+                summary_vectors = pickle.loads(summary.summary_vectors)
+                
+                # 计算相似度得分
+                max_similarity = 0
+                
+                # 检查正文向量
+                for item in content_vectors:
+                    similarity = cosine_similarity(
+                        [query_vector],
+                        [item['vector']]
+                    )[0][0]
+                    max_similarity = max(max_similarity, similarity)
+                
+                # 检查摘要向量
+                for item in summary_vectors:
+                    similarity = cosine_similarity(
+                        [query_vector],
+                        [item['vector']]
+                    )[0][0]
+                    max_similarity = max(max_similarity, similarity)
+                
+                # 如果相似度超过阈值
+                if max_similarity > 0.3:  # 可以调整阈值
+                    results.append({
+                        'id': summary.id,
+                        'file_name': summary.original_filename or summary.display_filename or summary.file_name,
+                        'summary_text': summary.summary_text,
+                        'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        'target_language': summary.target_language,
+                        'summary_length': summary.summary_length,
+                        'score': max_similarity * 10,  # 将得分转换为0-10的范围
+                        'keywords': summary.keywords.split('|') if summary.keywords else [],
+                        'topic_analysis': summary.topic_analysis
+                    })
+            
+            except Exception as e:
+                print(f"处理文档 {summary.id} 时出错: {str(e)}")
+                continue
+        
+        # 按相关度排序
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'results': results[:10]  # 只返回最相关的10个结果
+        })
+        
+    except Exception as e:
+        print(f"搜索文档时出错: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     with app.app_context():

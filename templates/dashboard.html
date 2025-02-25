@@ -530,6 +530,341 @@
             transition: opacity 0.2s, visibility 0.2s;
             pointer-events: none;
         }
+
+        /* 添加额外样式确保内容正确显示 */
+        .summary-content {
+            overflow-wrap: break-word !important;
+            word-wrap: break-word !important;
+            word-break: break-word !important;
+            white-space: normal !important;
+            max-width: 100% !important;
+            overflow: visible !important;
+            display: block !important;
+            height: auto !important;
+            min-height: 100px !important;
+            line-height: 1.8 !important;
+            text-overflow: unset !important;
+            box-sizing: border-box !important;
+            position: static !important;
+        }
+
+        .card-body {
+            padding: 1.5rem;
+            overflow: visible !important;
+            max-height: none !important;
+            height: auto !important;
+            min-height: 200px !important;
+            position: static !important;
+        }
+
+        .card {
+            height: auto !important;
+            overflow: visible !important;
+            position: static !important;
+            display: block !important;
+            margin-bottom: 2rem !important;
+        }
+
+        /* 修改主内容区域样式，允许滚动但不限制内部元素 */
+        .main-content {
+            max-height: calc(100vh - 90px);
+            overflow-y: auto;
+            padding-bottom: 2rem; /* 增加底部间距，确保内容可见 */
+        }
+
+        .markdown-body pre {
+            position: relative;
+            overflow-x: auto;
+            max-width: 100%;
+            background-color: #f6f8fa;
+            border-radius: 6px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .markdown-body pre code {
+            padding: 0;
+            background-color: transparent;
+            border-radius: 0;
+            white-space: pre-wrap;
+        }
+
+        .markdown-body p, .markdown-body li {
+            white-space: normal;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+            word-break: break-word;
+        }
+
+        .markdown-body table {
+            width: 100%;
+            max-width: 100%;
+            table-layout: fixed;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+            display: block;
+        }
+
+        .markdown-body td, .markdown-body th {
+            padding: 8px;
+            border: 1px solid #ddd;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        .markdown-body img {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .markdown-body .keywords-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .copy-btn {
+            z-index: 10;
+        }
+
+        /* 修改滚动条样式 */
+        .card-body::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .card-body::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        .card-body::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 4px;
+        }
+
+        .card-body::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+
+        /* 增强对多种Markdown元素的支持 */
+        .markdown-body blockquote {
+            padding: 0 1em;
+            color: #6a737d;
+            border-left: 0.25em solid #dfe2e5;
+            margin: 0 0 1em 0;
+        }
+
+        .markdown-body blockquote > :first-child {
+            margin-top: 0;
+        }
+
+        .markdown-body blockquote > :last-child {
+            margin-bottom: 0;
+        }
+
+        .markdown-body hr {
+            height: 0.25em;
+            padding: 0;
+            margin: 24px 0;
+            background-color: #e1e4e8;
+            border: 0;
+        }
+
+        /* 修复长文本摘要的高度问题 */
+        .main-content {
+            max-height: calc(100vh - 90px);
+            overflow-y: auto;
+        }
+
+        /* 修复代码块中的长行显示问题 */
+        .markdown-body pre code {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        /* 定义关键词标签样式 */
+        .keywords-section .badge {
+            font-size: 0.85rem;
+            padding: 0.35em 0.65em;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        /* 添加全局切换视图按钮样式 */
+        .view-toggle-btn {
+            position: sticky;
+            top: 70px;
+            z-index: 1030;
+            margin-bottom: 1rem;
+            background-color: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            padding: 0.5rem;
+        }
+
+        /* 确保所有markdown内容都能完整显示 */
+        .markdown-body, .markdown-content {
+            overflow: visible !important;
+            max-height: none !important;
+            height: auto !important;
+        }
+
+        /* 添加内容溢出指示器 */
+        .content-overflow-indicator {
+            display: none;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background-color: #fff3cd;
+            border: 1px solid #ffecb5;
+            border-radius: 0.25rem;
+            color: #664d03;
+        }
+
+        /* 修复内容截断问题的关键CSS */
+        .summary-content, .raw-view pre, .rendered-view {
+            overflow: visible !important;
+            white-space: normal !important;
+            word-wrap: break-word !important;
+            word-break: break-word !important;
+            max-height: none !important;
+            height: auto !important;
+            max-width: 100% !important;
+            display: block !important;
+            position: static !important;
+            text-overflow: clip !important;
+        }
+
+        .card-body {
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+            padding: 1.5rem;
+            position: static !important;
+        }
+
+        .card {
+            overflow: visible !important;
+            height: auto !important;
+            position: static !important;
+        }
+
+        .main-content {
+            overflow-y: auto;
+            max-height: calc(100vh - 90px);
+            padding-bottom: 3rem;
+        }
+
+        /* 确保markdown内容正确显示 */
+        .markdown-body p, 
+        .markdown-body h1, 
+        .markdown-body h2, 
+        .markdown-body h3, 
+        .markdown-body h4, 
+        .markdown-body h5, 
+        .markdown-body h6, 
+        .markdown-body ul, 
+        .markdown-body ol, 
+        .markdown-body li, 
+        .markdown-body blockquote {
+            overflow: visible !important;
+            white-space: normal !important;
+            word-wrap: break-word !important;
+            word-break: break-word !important;
+            max-width: 100% !important;
+        }
+
+        /* 确保代码块正确显示 */
+        .markdown-body pre {
+            overflow-x: auto !important;
+            white-space: pre-wrap !important;
+            word-wrap: break-word !important;
+            max-width: 100% !important;
+            position: relative !important;
+        }
+
+        /* 修复表格显示问题 */
+        .markdown-body table {
+            display: block !important;
+            width: 100% !important;
+            overflow-x: auto !important;
+            max-width: 100% !important;
+        }
+
+        /* 确保内容容器不受限制 */
+        .content-container {
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            position: static !important;
+        }
+
+        /* 修复原始视图显示 */
+        .raw-view {
+            overflow: visible !important;
+            max-height: none !important;
+            height: auto !important;
+        }
+
+        .raw-view pre {
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            overflow-wrap: break-word !important;
+            overflow: visible !important;
+            max-height: none !important;
+            height: auto !important;
+            padding: 1rem !important;
+            background-color: #f8f9fa !important;
+            border-radius: 0.375rem !important;
+            border: 1px solid #e9ecef !important;
+        }
+
+        /* 全局样式覆盖，确保内容完整显示 */
+        body * {
+            overflow-wrap: break-word !important;
+            word-wrap: break-word !important;
+        }
+
+        /* 强制覆盖任何可能导致内容截断的样式 */
+        .card, .card-body, .content-container, .summary-content, .raw-view, .rendered-view, 
+        .markdown-body, .markdown-content, pre, code, p, div, span, h1, h2, h3, h4, h5, h6 {
+            overflow: visible !important;
+            text-overflow: clip !important;
+            white-space: normal !important;
+            word-break: break-word !important;
+            overflow-wrap: break-word !important;
+            max-height: none !important;
+            height: auto !important;
+        }
+
+        /* 确保原始视图内容完整显示 */
+        .raw-view pre {
+            max-width: 100% !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 1rem !important;
+            background-color: #f8f9fa !important;
+            border-radius: 0.375rem !important;
+            border: 1px solid #e9ecef !important;
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+            overflow-wrap: break-word !important;
+        }
+
+        /* 修复可能的布局问题 */
+        .main-content {
+            display: block !important;
+            width: 100% !important;
+        }
+
+        /* 确保内容区域有足够的空间 */
+        #chatBody {
+            min-height: 300px !important;
+            height: auto !important;
+            overflow: visible !important;
+            padding-bottom: 3rem !important;
+        }
     </style>
 </head>
 <body>
@@ -1060,19 +1395,54 @@
 
                 // 处理每个文件的结果
                 result.results.forEach(fileResult => {
+                    // 创建一个安全的文件名显示
+                    const safeFilename = document.createElement('div');
+                    safeFilename.textContent = fileResult.filename;
+                    
+                    let summaryContent = '';
+                    if (fileResult.success) {
+                        // 保存原始内容
+                        const originalSummary = fileResult.summary || '';
+                        
+                        // 尝试使用markdown处理函数
+                        try {
+                            const processed = processMarkdown(originalSummary);
+                            
+                            // 直接显示渲染后的内容，不显示原始视图切换按钮和关键词
+                            summaryContent = `
+                                <div class="content-container">
+                                    <div class="summary-content rendered-view" 
+                                         data-processed="true"
+                                         data-original-content="${escapeHtml(originalSummary)}">
+                                        ${processed.renderedContent}
+                                    </div>
+                                </div>
+                            `;
+                        } catch (error) {
+                            console.error("处理摘要内容时出错:", error);
+                            // 出错时直接显示原始内容
+                            summaryContent = `
+                                <div class="alert alert-warning mb-3">
+                                    <i class="bi bi-exclamation-triangle me-2"></i>
+                                    内容渲染时遇到问题，显示原始格式
+                                </div>
+                                <pre class="p-3 bg-light rounded" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(originalSummary)}</pre>
+                            `;
+                        }
+                    } else {
+                        summaryContent = `<div class="alert alert-danger">${fileResult.error}</div>`;
+                    }
+                    
                     resultHtml += `
                         <div class="card mb-4">
                             <div class="card-header">
                                 <h5 class="mb-0">
                                     <i class="bi ${getFileIcon(fileResult.filename)}"></i>
-                                    ${fileResult.filename}
+                                    ${safeFilename.textContent}
                                 </h5>
                             </div>
                             <div class="card-body">
-                                ${fileResult.success 
-                                    ? `<div class="summary-content">${fileResult.summary}</div>`
-                                    : `<div class="alert alert-danger">${fileResult.error}</div>`
-                                }
+                                ${summaryContent}
                             </div>
                         </div>
                     `;
@@ -1080,6 +1450,38 @@
 
                 resultHtml += '</div>';
                 chatBody.innerHTML = resultHtml;
+
+                // 初始化所有代码块的高亮显示
+                document.querySelectorAll('pre code').forEach((block) => {
+                    hljs.highlightElement(block);
+                });
+
+                // 添加复制按钮到代码块
+                document.querySelectorAll('pre').forEach((block) => {
+                    if (!block.querySelector('.copy-btn')) {
+                        const button = document.createElement('button');
+                        button.className = 'copy-btn btn btn-sm btn-outline-secondary';
+                        button.textContent = '复制';
+                        button.style.position = 'absolute';
+                        button.style.top = '5px';
+                        button.style.right = '5px';
+                        button.style.opacity = '0.7';
+                        
+                        block.style.position = 'relative';
+                        
+                        button.addEventListener('click', () => {
+                            const code = block.querySelector('code')?.textContent || block.textContent;
+                            navigator.clipboard.writeText(code).then(() => {
+                                button.textContent = '已复制!';
+                                setTimeout(() => {
+                                    button.textContent = '复制';
+                                }, 2000);
+                            });
+                        });
+                        
+                        block.appendChild(button);
+                    }
+                });
 
                 // 显示成功消息
                 const successMessage = `
@@ -1141,6 +1543,225 @@
             tooltip.style.left = x + 'px';
             tooltip.style.top = y + 'px';
         }
+
+        // 修改processMarkdown函数，改进处理长文本的方式
+        function processMarkdown(text) {
+            if (!text) return { keywordsHtml: '', renderedContent: '' };
+            
+            // 确保文本是字符串
+            text = String(text);
+            
+            // 添加调试日志
+            console.log("处理摘要内容，长度:", text.length);
+            
+            // 提取并处理关键词和摘要
+            let summaryText = text;
+            
+            // 完全删除关键词部分，只保留摘要部分
+            if (text.includes('[KEYWORDS]') && text.includes('[SUMMARY]')) {
+                const summaryStart = text.indexOf('[SUMMARY]');
+                if (summaryStart !== -1) {
+                    // 只取[SUMMARY]后面的部分
+                    summaryText = text.substring(summaryStart + '[SUMMARY]'.length).trim();
+                }
+            } else if (text.includes('[KEYWORDS]') && !text.includes('[SUMMARY]')) {
+                // 如果只有关键词标记但没有摘要标记，移除关键词部分
+                const keywordsEnd = text.indexOf('[KEYWORDS]');
+                const nextLineAfterKeywords = text.indexOf('\n', keywordsEnd + '[KEYWORDS]'.length);
+                
+                if (nextLineAfterKeywords !== -1) {
+                    // 找到关键词行的下一行，从那里开始是摘要内容
+                    summaryText = text.substring(nextLineAfterKeywords).trim();
+                }
+            }
+            
+            // 确保没有任何关键词标记残留
+            summaryText = summaryText.replace(/\[KEYWORDS\].*?\n/g, '');
+            
+            // 移除可能的SUMMARY标记
+            summaryText = summaryText.replace(/\[SUMMARY\]/g, '');
+            
+            // 不再生成关键词HTML，返回空字符串
+            let keywordsHtml = '';
+            
+            // 处理Markdown内容
+            try {
+                // 确保段落和换行正确处理
+                summaryText = summaryText.replace(/\n\s*\n/g, '\n\n').replace(/\n/g, '\n\n');
+                
+                // 初始化markdown-it
+                const md = window.markdownit({
+                    html: true,
+                    linkify: true,
+                    typographer: true,
+                    breaks: true,
+                    highlight: function (str, lang) {
+                        if (lang && hljs.getLanguage(lang)) {
+                            try {
+                                return hljs.highlight(str, { language: lang }).value;
+                            } catch (__) {}
+                        }
+                        return '';
+                    }
+                });
+                
+                // 渲染Markdown内容
+                let renderedContent = md.render(summaryText);
+                
+                // 确保内容被完整渲染
+                console.log("渲染后的HTML长度:", renderedContent.length);
+                
+                // 如果渲染内容很短但原始文本很长，可能是渲染有问题，尝试备用方案
+                if (renderedContent.length < 100 && summaryText.length > 500) {
+                    console.warn("渲染结果异常短，使用备用渲染方法");
+                    // 使用简单的HTML转换作为备用
+                    renderedContent = summaryText
+                        .split('\n\n')
+                        .map(para => para.trim() ? `<p>${escapeHtml(para)}</p>` : '')
+                        .join('');
+                }
+                
+                return {
+                    keywordsHtml,
+                    renderedContent
+                };
+            } catch (error) {
+                console.error("Markdown渲染错误:", error);
+                // 出错时返回纯文本版本
+                return {
+                    keywordsHtml,
+                    renderedContent: `<pre style="white-space: pre-wrap;">${escapeHtml(summaryText)}</pre>`
+                };
+            }
+        }
+
+        // 添加辅助函数以转义HTML
+        function escapeHtml(unsafe) {
+            if (!unsafe) return '';
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        // 初始化页面上的所有Markdown内容
+        function initializeMarkdownContent() {
+            const summaryContainers = document.querySelectorAll('.summary-content');
+            
+            summaryContainers.forEach(container => {
+                // 如果内容没有被处理过
+                if (!container.dataset.processed) {
+                    const originalContent = container.textContent || container.innerText || container.dataset.originalContent;
+                    if (originalContent) {
+                        const processed = processMarkdown(originalContent);
+                        
+                        // 直接更新容器内容，不添加关键词
+                        container.innerHTML = processed.renderedContent;
+                        
+                        // 标记为已处理
+                        container.dataset.processed = 'true';
+                    }
+                }
+            });
+            
+            // 初始化代码块高亮
+            document.querySelectorAll('pre code').forEach(block => {
+                hljs.highlightElement(block);
+            });
+            
+            // 添加复制按钮到代码块
+            document.querySelectorAll('pre').forEach(block => {
+                if (!block.querySelector('.copy-btn')) {
+                    const button = document.createElement('button');
+                    button.className = 'copy-btn btn btn-sm btn-outline-secondary';
+                    button.textContent = '复制';
+                    button.style.position = 'absolute';
+                    button.style.top = '5px';
+                    button.style.right = '5px';
+                    button.style.opacity = '0.7';
+                    
+                    block.style.position = 'relative';
+                    
+                    button.addEventListener('click', () => {
+                        const code = block.querySelector('code')?.textContent || block.textContent;
+                        navigator.clipboard.writeText(code).then(() => {
+                            button.textContent = '已复制!';
+                            setTimeout(() => {
+                                button.textContent = '复制';
+                            }, 2000);
+                        });
+                    });
+                    
+                    block.appendChild(button);
+                }
+            });
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log("页面加载完成，开始初始化...");
+            
+            // 初始化已有的Markdown内容
+            initializeMarkdownContent();
+            
+            // 设置高级选项折叠按钮事件
+            const advancedOptionsBtn = document.getElementById('advancedOptionsBtn');
+            if (advancedOptionsBtn) {
+                const advancedOptions = document.getElementById('advancedOptions');
+                const chevronIcon = advancedOptionsBtn.querySelector('.bi');
+                
+                advancedOptionsBtn.addEventListener('click', function() {
+                    if (advancedOptions.classList.contains('show')) {
+                        chevronIcon.classList.remove('bi-chevron-up');
+                        chevronIcon.classList.add('bi-chevron-down');
+                    } else {
+                        chevronIcon.classList.remove('bi-chevron-down');
+                        chevronIcon.classList.add('bi-chevron-up');
+                    }
+                });
+            }
+            
+            // 强制修复可能的内容截断问题
+            function forceFixContentDisplay() {
+                console.log("强制修复内容显示问题...");
+                
+                // 确保所有内容容器可见
+                document.querySelectorAll('.card, .card-body, .content-container, .summary-content, .rendered-view').forEach(el => {
+                    el.style.overflow = 'visible';
+                    el.style.maxHeight = 'none';
+                    el.style.height = 'auto';
+                    el.style.display = 'block';
+                    el.style.position = 'static';
+                });
+                
+                // 确保渲染视图内容正确显示
+                document.querySelectorAll('.rendered-view').forEach(el => {
+                    // 检查内容是否为空
+                    if (el.innerHTML.trim() === '') {
+                        // 尝试从原始内容重新渲染
+                        const originalContent = el.dataset.originalContent;
+                        if (originalContent) {
+                            try {
+                                const processed = processMarkdown(originalContent);
+                                el.innerHTML = processed.renderedContent;
+                            } catch (error) {
+                                console.error("重新渲染内容失败:", error);
+                            }
+                        }
+                    }
+                });
+            }
+            
+            // 在页面加载后延迟执行修复
+            setTimeout(forceFixContentDisplay, 500);
+            
+            // 在窗口调整大小后重新执行修复
+            window.addEventListener('resize', function() {
+                setTimeout(forceFixContentDisplay, 300);
+            });
+        });
     </script>
 </body>
 </html>

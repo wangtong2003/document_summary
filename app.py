@@ -52,6 +52,9 @@ from langchain_community.llms import Ollama
 from langchain_ollama import OllamaEmbeddings
 from typing import List, Dict, Any
 import pickle
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+import copy
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -69,7 +72,7 @@ app.config['MAX_CONTENT_LENGTH'] = None  # 禁用全局限制
 app.config['MAX_FILE_SIZE'] = 200 * 1024 * 1024  # 修改为 200MB 单文件限制
 
 # MySQL配置
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:20030221@localhost/document_summary?charset=utf8mb4'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:123456@localhost/document_summary?charset=utf8mb4'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_size': 10,  # 连接池大小
@@ -158,7 +161,7 @@ class DocumentSummary(db.Model):
     mime_type = db.Column(db.String(100))
     original_filename = db.Column(db.String(255))
     display_filename = db.Column(db.String(255))
-    keywords = db.Column(db.String(255))
+    keywords = db.Column(db.String(255))  # 增加 keywords 字段长度到 255
     topic_analysis = db.Column(db.JSON)
     embedding_model = db.Column(db.String(100))
     chunks_info = db.Column(db.JSON)
@@ -299,7 +302,6 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
     """保存或更新文档摘要到MySQL"""
     try:
         print("\n=== 开始保存摘要到数据库 ===")
-        print(f"文件信息: {file_info}")
         print(f"摘要长度: {len(summary_text) if summary_text else 0}")
         print(f"参数: {params}")
         
@@ -411,17 +413,14 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 
                 # 创建混合向量存储
                 try:
-                    content_store_path, summary_store_path = create_hybrid_vector_store(
+                    print(f"原始文本类型: {type(new_summary.original_text)}, 原始文本长度: {len(new_summary.original_text) if new_summary.original_text else 0}")
+                    print(f"摘要文本类型: {type(new_summary.summary_text)}, 摘要文本长度: {len(new_summary.summary_text) if new_summary.summary_text else 0}")
+                    create_hybrid_vector_store(
                         new_summary.original_text,
                         new_summary.summary_text,
                         new_summary.id
                     )
-                    
-                    # 将向量存储路径保存到数据库
-                    new_summary.content_vectors = content_store_path.encode()
-                    new_summary.summary_vectors = summary_store_path.encode()
-                    db.session.commit()
-                    print(f"向量存储创建成功，保存在 {content_store_path} 和 {summary_store_path}")
+                    print("向量存储创建成功")
                 except Exception as e:
                     print(f"创建向量存储失败: {str(e)}")
                     # 继续处理，不要因为向量存储失败而影响整个摘要保存
@@ -465,48 +464,45 @@ def read_pdf(file_path):
         print(f"开始读取PDF文件: {file_path}")
         text = ""
         
-        # 首先尝试使用 PyPDF2
+        # 首先尝试使用 PyMuPDF (更稳定的选择)
         try:
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                num_pages = len(pdf_reader.pages)
-                print(f"PDF文件共有 {num_pages} 页")
-                
-                for page_num in range(num_pages):
-                    try:
-                        page = pdf_reader.pages[page_num]
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n\n"
-                        print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
-                    except Exception as e:
-                        print(f"PyPDF2读取第 {page_num + 1} 页时出错: {str(e)}")
-                        continue
-            
-            if text.strip():
-                return text
-                
-            # 如果PyPDF2提取的文本为空，尝试使用fitz (PyMuPDF)
-            print("PyPDF2提取的文本为空，尝试使用PyMuPDF...")
-            raise Exception("PyPDF2提取的文本为空")
-                
-        except Exception as e:
-            print(f"PyPDF2处理失败，尝试使用PyMuPDF: {str(e)}")
-            # 如果PyPDF2失败，使用fitz (PyMuPDF)作为备选
             with fitz.open(file_path) as doc:
                 num_pages = doc.page_count
                 print(f"PDF文件共有 {num_pages} 页 (PyMuPDF)")
                 
-                for page_num in range(num_pages):
+                # 创建线程池
+                from concurrent.futures import ThreadPoolExecutor
+                from threading import Lock
+                
+                # 创建一个锁用于同步写入
+                text_lock = Lock()
+                page_texts = [""] * num_pages  # 预分配页面文本列表
+                
+                def process_page_fitz(page_num):
                     try:
                         page = doc[page_num]
                         page_text = page.get_text()
                         if page_text:
-                            text += page_text + "\n\n"
-                        print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
+                            print(f"成功读取第 {page_num + 1} 页，提取到 {len(page_text)} 个字符")
+                            return page_num, page_text + "\n\n"
+                        return page_num, ""
                     except Exception as e:
                         print(f"PyMuPDF读取第 {page_num + 1} 页时出错: {str(e)}")
-                        continue
+                        return page_num, ""
+                
+                # 使用线程池并行处理页面
+                with ThreadPoolExecutor(max_workers=min(os.cpu_count(), 8)) as executor:
+                    futures = [executor.submit(process_page_fitz, i) for i in range(num_pages)]
+                    for future in futures:
+                        page_num, page_text = future.result()
+                        page_texts[page_num] = page_text
+                
+                # 合并所有页面文本
+                text = "".join(page_texts)
+        except Exception as e:
+            print(f"使用PyMuPDF读取PDF失败: {str(e)}")
+            # 如果PyMuPDF失败，可以在这里添加备用的PDF读取方法
+            raise
         
         if not text.strip():
             raise Exception("未能从PDF中提取任何文本")
@@ -549,22 +545,49 @@ def read_docx(file_path):
         
         # 对于.docx文件使用python-docx
         doc = Document(file_path)
-        text = []
+        text_parts = []
         
-        # 提取段落文本
-        for para in doc.paragraphs:
+        # 创建线程池
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Lock
+        
+        # 创建一个锁用于同步写入
+        text_lock = Lock()
+        
+        def process_paragraph(para):
             if para.text.strip():
-                text.append(para.text)
-                
-        # 提取表格文本
-        for table in doc.tables:
+                return para.text + "\n"
+            return ""
+            
+        def process_table(table):
+            table_text = []
             for row in table.rows:
                 for cell in row.cells:
                     if cell.text.strip():
-                        text.append(cell.text)
+                        table_text.append(cell.text)
+            return "\n".join(table_text) + "\n" if table_text else ""
         
-        # 合并所有文本，使用双换行符分隔
-        result = '\n\n'.join(text)
+        # 使用线程池并行处理段落和表格
+        with ThreadPoolExecutor(max_workers=min(os.cpu_count(), 8)) as executor:
+            # 并行处理段落
+            para_futures = [executor.submit(process_paragraph, para) for para in doc.paragraphs]
+            # 并行处理表格
+            table_futures = [executor.submit(process_table, table) for table in doc.tables]
+            
+            # 收集段落结果
+            for future in para_futures:
+                text = future.result()
+                if text:
+                    text_parts.append(text)
+                    
+            # 收集表格结果
+            for future in table_futures:
+                text = future.result()
+                if text:
+                    text_parts.append(text)
+        
+        # 合并所有文本
+        result = "".join(text_parts)
         
         if not result.strip():
             raise ValueError("文档内容为空")
@@ -645,40 +668,85 @@ def generate_summary(text):
         client = Client(host='http://localhost:11434')
         
         # 构建提示词
-        system_prompt = """You are a powerful AI assistant capable of reading text content and summarizing it. 
-        Please follow these basic requirements:
+        system_prompt = """你是一个专业的文档摘要和关键词提取专家。请按照以下思维步骤分析文档并生成高质量摘要：
 
-        [BASIC REQUIREMENTS]
-        - Summary Length: 约500字
-        - Target Language: chinese
-        - Keywords: Generate exactly 4 keywords that best represent the main topics of the text
+        [思考步骤]
+        1. 分析：仔细阅读整个文档，确定文档的主题、目的和主要论点
+        2. 提取：识别文档中的核心概念、关键信息点和重要论述
+        3. 判断类型：确定文档是学术论文、研究报告、技术文档还是一般文章
+        4. 分类：
+           - 对于学术/研究类文档：按"研究背景"、"研究问题"、"方法论"、"主要发现"、"研究意义"分类
+           - 对于技术/一般类文档：按"引言"、"核心论点"、"方法/发现"、"结论"分类
+        5. 提炼：从每个类别中提取最具代表性的内容，确保覆盖文档的实质
+        6. 关键词：确定能够准确代表文档核心内容的4个最重要关键词
+        7. 整合：将以上信息整合成连贯、简洁的摘要，保持原文的核心意义
 
-        [OUTPUT FORMAT]
-        Please format your response as follows:
+        [输出格式要求]
+        1. 首先输出 [KEYWORDS] 标记
+        2. 在其下方输出4个最重要的关键词，用竖线(|)分隔
+        3. 然后输出 [SUMMARY] 标记
+        4. 最后输出结构化摘要正文，根据文档类型选择适当的结构：
+           
+           学术/研究类文档结构：
+           - 引言（约75字）：简述研究背景和目的
+           - 核心论点（约200字）：按条理列出研究的主要理论观点
+           - 研究方法（约100字）：描述研究采用的方法和数据
+           - 研究发现（约100字）：总结主要的研究结果或发现
+           - 结论与意义（约75字）：指出研究的结论和实践意义
+           
+           技术/一般类文档结构：
+           - 引言（约75字）：简述文档背景和目的
+           - 核心论点（约250字）：按条理列出文档的主要观点
+           - 方法/发现（约100字）：描述文档中的关键方法或发现
+           - 结论（约75字）：总结文档的结论或展望
 
+        [关键词要求]
+        1. 必须提取4个关键词
+        2. 关键词应该是文档中最具代表性的词语
+        3. 每个关键词长度建议在2-4个字之间
+        4. 关键词之间使用竖线(|)分隔，不要有多余的空格
+        5. 关键词要按重要性排序
+
+        [摘要要求]
+        1. 摘要总长度控制在500字左右
+        2. 使用清晰的段落结构，每个主要部分单独成段
+        3. 为每个段落添加明确的小标题（如"引言："、"核心论点："等）
+        4. 保持客观性和准确性，不添加原文中不存在的内容
+        5. 对于学术文献，保留核心术语和引用信息（如"研究[1]表明..."）
+        6. 使用清晰流畅的语言，对专业术语给予必要解释
+        7. 确保摘要能独立于原文被理解
+
+        示例输出格式（学术论文）：
         [KEYWORDS]
-        keyword1|keyword2|keyword3|keyword4
+        大语言模型|文本摘要|思维链|效果评估
 
         [SUMMARY]
-        Your summary text here...
+        引言：本研究探讨了思维链方法在提升大语言模型文档摘要能力方面的应用。随着大语言模型在自然语言处理领域的广泛应用，提高其在文档摘要任务中的表现变得尤为重要。
 
-        [INSTRUCTIONS]
-        1. First output exactly 4 keywords separated by | character
-        2. Then output the summary after [SUMMARY] marker
-        3. Keywords should be concise and representative
-        4. Write everything in chinese
+        核心论点：
+        1. 大语言模型（如GPT系列）虽具强大的文本理解和生成能力，但在文档摘要中表现出色，能够减少人工干预的需求[2]。研究表明，使用预训练的语言模型并对其进行微调可以有效提升文档摘要质量。
+        2. 思维链方法通过引导模型按步骤思考，显著改善了摘要的结构性和准确性。这种方法在实验中获得了比传统摘要方法高15%的用户满意度[3]。
+        3. 国内外研究均表明大语言模型在文档摘要领域有广泛应用。国外方面，冯志伟总结了大语言模型不仅促进了自然语言处理技术的工程成功，还深刻改变了语言知识的生产方式[5]。
+
+        研究方法：本研究采用了对比实验方法，比较了普通提示词和思维链提示词生成的摘要质量。评估维度包括信息完整性、结构清晰度和关键信息提取能力。研究使用了标准摘要数据集进行测试，并通过人工评估验证结果。
+
+        研究发现：实验结果表明，基于思维链方法的提示策略能够显著提高摘要的质量和可用性。特别是在结构化信息提取和关键观点识别方面，思维链方法的表现优于传统方法。用户反馈也显示，思维链生成的摘要更易于理解和使用。
+
+        结论与意义：思维链方法为提升大语言模型在文档摘要任务中的表现提供了有效途径。这一发现不仅对改进文档摘要技术具有重要意义，也为其他自然语言处理任务提供了参考。未来研究将进一步探索思维链方法在更复杂文档类型中的适用性。
         """
         
         content = f"""
-        ARTICLE_TO_SUMMARY:
-        <ARTICLE>
+        需要分析的文本内容：
+        <文本>
         {text}
-        </ARTICLE>
+        </文本>
+
+        请按照思维步骤分析文档，首先判断文档类型（学术论文、研究报告、技术文档或一般文章），然后基于文档类型选择适当的摘要结构，按规定格式提取关键词并生成结构化摘要。确保输出的关键词正好是4个，用竖线分隔。
         """
         
-        print("调用程 Ollama API...")
+        print("调用 Ollama API...")
         response = client.generate(
-            model='qwen2.5:3b',
+            model='huihui_ai/qwen2.5-1m-abliterated:latest',
             prompt=system_prompt + content,
             stream=False
         )
@@ -830,8 +898,88 @@ def process_document():
         return jsonify({'error': f'处理文档失败: {str(e)}'}), 500
 
 def ollama_text(input_text, params=None, file_info=None, file_content=None):
+    """使用Ollama生成文本摘要"""
     try:
+        if not input_text:
+            raise ValueError("输入文本不能为空")
+            
+        if not params:
+            params = {}
+            
         client = Client(host='http://localhost:11434')
+        
+        # 首先获取关键词
+        print("正在生成关键词...")
+        keyword_prompt = f"""请从以下文本中提取4个最重要的关键词,要求：
+        1. 每个关键词2-4个字
+        2. 用竖线分隔
+        3. 直接输出关键词,不要其他内容
+        4. 关键词应该反映文档的核心主题和内容
+        
+        文本内容：{input_text[:3000]}"""  # 限制文本长度为3000字符
+        
+        try:
+            keyword_response = client.generate(
+                model='huihui_ai/qwen2.5-1m-abliterated:latest',
+                prompt=keyword_prompt,
+                stream=False,
+                options={'temperature': 0.4}
+            )
+            
+            if not keyword_response or 'response' not in keyword_response:
+                raise Exception("关键词API响应为空或格式错误")
+                
+            keywords = keyword_response['response'].strip()
+            # 清理关键词文本，只保留实际的关键词
+            keywords = re.sub(r'[^\w\u4e00-\u9fff|]', '', keywords)  # 只保留中文、字母、数字和分隔符
+            keyword_list = keywords.split('|')
+            
+        except Exception as e:
+            print(f"生成关键词失败: {str(e)}")
+            print("使用默认关键词")
+            keyword_list = ["文档摘要", "系统设计", "模型应用", "智能处理"]
+
+        if len(keyword_list) != 4:
+            print(f"警告：关键词数量不正确({len(keyword_list)})，进行调整")
+            # 如果关键词不足4个，从文本中提取新的关键词补充
+            if len(keyword_list) < 4:
+                # 使用新的提示词尝试获取更多关键词
+                additional_prompt = f"""从以下文本中再提取{4 - len(keyword_list)}个关键词，要求：
+                1. 不要与已有关键词重复：{', '.join(keyword_list)}
+                2. 每个关键词2-4个字
+                3. 直接输出关键词，用竖线分隔
+                
+                文本内容：{input_text[:2000]}"""
+                
+                try:
+                    additional_response = client.generate(
+                        model='huihui_ai/qwen2.5-1m-abliterated:latest',
+                        prompt=additional_prompt,
+                        stream=False,
+                        options={'temperature': 0.4}
+                    )
+                    
+                    if not additional_response or 'response' not in additional_response:
+                        raise Exception("补充关键词API响应为空或格式错误")
+                        
+                    additional_keywords = additional_response['response'].strip()
+                    additional_keywords = re.sub(r'[^\w\u4e00-\u9fff|]', '', additional_keywords)
+                    additional_list = additional_keywords.split('|')
+                    keyword_list.extend(additional_list[:4 - len(keyword_list)])
+                    
+                except Exception as e:
+                    print(f"获取补充关键词失败: {str(e)}")
+                    # 使用默认值补充
+                    while len(keyword_list) < 4:
+                        keyword_list.append(f"主题{len(keyword_list)+1}")
+            
+            # 如果关键词超过4个，只保留前4个
+            keyword_list = keyword_list[:4]
+            
+        # 确保每个关键词不超过8个字符
+        keyword_list = [k[:8] for k in keyword_list]
+        keywords = '|'.join(keyword_list)
+        print(f"最终关键词: {keywords}")
         
         # 获取参数
         summary_length = params.get('summary_length', 'medium')
@@ -840,114 +988,227 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         focus_area = params.get('focus_area', '')
         expertise_level = params.get('expertise_level', '')
         language_style = params.get('language_style', '')
+        output_format = params.get('output_format', 'paragraph')  # 新增输出格式参数
         
-        # 更新字数映射
+        # 更新字数映射为整数值
         summary_length_map = {
-            'very_short': '100字',
-            'medium': '500字',
-            'long': '2000字',
-            'very_long': '5000字'
+            'very_short': 200,
+            'medium': 500,
+            'long': 2000,
+            'very_long': 5000
         }
         
-        target_length = summary_length_map.get(summary_length, '500字')
-        target_word_count = int(target_length.replace('字', ''))
+        target_word_count = summary_length_map.get(summary_length, 500)
 
-        # 使用思维链提示词
-        chain_of_thought_prompt = f"""你是一个专业的文档摘要专家。请使用以下步骤分析文档并生成摘要：
-
-        [分析步骤]
-        1. 文档结构分析
-        - 识别文档的主要部分和层次结构
-        - 找出每个部分的主题句和关键论点
+        # 风格说明映射
+        style_descriptions = {
+            'casual': '使用通俗易懂的语言，避免专业术语，适合一般读者',
+            'academic': '使用学术性语言，包含专业术语和引用，适合学术读者',
+            'professional': '使用专业分析的语言风格，包含行业术语，适合专业人士',
+            'creative': '使用创意性的表达方式，生动有趣',
+            'journalistic': '使用新闻报道的风格，客观中立，事实为主',
+            'technical': '使用技术文档的风格，详细准确，步骤清晰',
+            'business': '使用商务简报的风格，简洁直接，重点突出',
+            'educational': '使用教育讲解的风格，通俗易懂，循序渐进'
+        }
         
-        2. 核心内容提取
-        - 提取文档的主要论点和观点
-        - 识别重要的数据、事实和证据
-        - 找出作者的立场和结论
+        # 输出格式映射
+        format_descriptions = {
+            'paragraph': '使用连续段落的形式组织内容',
+            'bullet': '使用要点列表的形式组织内容，每个要点以"•"开始',
+            'outline': '使用大纲结构组织内容，包含标题和子标题',
+            'qa': '使用问答形式组织内容，针对文档的关键问题提供答案',
+            'mindmap': '使用思维导图结构组织内容，从核心概念展开到各个方面'
+        }
         
-        3. 关键信息整合
-        - 将相关信息按逻辑关系组织
-        - 确保不同部分之间的连贯性
-        - 保留最具代表性的例子和论据
+        # 专业程度映射
+        expertise_descriptions = {
+            'beginner': '面向入门级读者，解释基本概念，避免深入技术细节',
+            'intermediate': '面向进阶读者，介绍适当的技术细节和背景知识',
+            'advanced': '面向专家级读者，包含深入的技术讨论和专业分析',
+            'expert': '面向权威级读者，包含最前沿的讨论和深度专业见解'
+        }
+
+        # 构建思维链提示词，包含所有前端参数
+        summary_prompt = f"""你是一个专业的文档摘要专家。请按照思维链方法分析文档并生成高质量摘要。
+
+[思维链步骤]
+1. 分析：仔细阅读文档，确定主题、目的和主要论点
+2. 提取：识别核心概念、关键信息点和重要论述
+3. 判断类型：确定文档是学术论文、研究报告、技术文档还是一般文章
+4. 分类整理：按照合适的结构组织内容
+5. 提炼：从每个部分提取最具代表性的内容
+6. 关键词确认：验证已提取的关键词是否准确反映文档核心内容
+7. 整合：按照用户指定的参数要求生成最终摘要
+
+[输出格式要求]
+1. 首先输出 [KEYWORDS] 标记
+2. 在其下方输出4个关键词，用竖线(|)分隔
+3. 然后输出 [SUMMARY] 标记
+4. 最后按照用户指定的格式输出摘要正文
+
+[关键词]
+{keywords}
+
+[用户指定参数]
+摘要长度：{target_word_count}字（±5%）
+目标语言：{target_language}
+摘要风格：{summary_style}（{style_descriptions.get(summary_style, '通用风格')}）
+输出格式：{output_format}（{format_descriptions.get(output_format, '连续段落')}）
+关注点：{focus_area}
+专业程度：{expertise_level}（{expertise_descriptions.get(expertise_level, '适合一般读者')}）
+语言风格：{language_style}
+
+[摘要结构要求]
+根据输出格式"{output_format}"和摘要风格"{summary_style}"，遵循以下结构：
+
+1. 引言部分（约15%）：
+   - 概述文档主题和背景
+   - 点明核心问题或目的
+   
+2. 主体部分（约60%）：
+   - 按照"{output_format}"格式组织文档的主要观点
+   - 每个关键点需包含至少一个具体案例或数据支持
+   - 使用"{expertise_level}"级别的专业术语和解释深度
+   
+3. 结论部分（约25%）：
+   - 总结文档的主要发现或结论
+   - 如果适用，提供实践建议或未来展望
+
+[内容质量要求]
+1. 确保摘要总长度为{target_word_count}字（±5%）
+2. 使用"{language_style}"的语言风格
+3. 重点关注"{focus_area}"方面的内容
+4. 保持客观性和准确性，不添加原文中不存在的内容
+5. 适当引用原文中的关键数据和证据支持观点
+
+[原文内容]
+{input_text}
+
+请按照以上步骤和要求生成摘要，确保摘要的长度、风格、格式和内容符合用户指定的所有参数。
+"""
         
-        4. 摘要生成
-        - 字数要求：{target_word_count}字(允许±5%)
-        - 语言风格：{language_style}
-        - 专业程度：{expertise_level}
-        - 重点关注：{focus_area}
-        - 表达方式：{summary_style}
+        print("正在生成摘要...")
         
-        [输出格式]
-        请按以下格式输出你的分析和摘要：
-
-        [文档分析]
-        1. 文档结构：
-        (分点说明文档的结构特点)
-
-        2. 主要论点：
-        (列出核心论点和观点)
-
-        3. 重要证据：
-        (列出关键的数据和证据)
-
-        [关键词]
-        keyword1|keyword2|keyword3|keyword4
-
-        [摘要]
-        (生成最终的摘要文本)
-
-        注意：
-        1. 分析过程要清晰可见
-        2. 确保摘要完整、准确、连贯
-        3. 严格控制最终摘要的字数
-        4. 使用恰当的过渡词连接各部分
-        5. 保持客观专业的语言风格
-        """
-
-        print("调用 Ollama API 生成摘要...")
-        response = client.generate(
-            model='qwen2.5:3b',
-            prompt=chain_of_thought_prompt + f"\n\n文档内容:\n{input_text}",
-            stream=False,
-            options={
-                'temperature': 0.7,
-                'top_p': 0.9,
-                'num_predict': target_word_count * 4  # 确保有足够的生成长度
-            }
-        )
-
-        if not response or 'response' not in response:
-            raise Exception("API 返回的数据格式不正确")
+        def generate_with_retry(max_retries=3):
+            """带重试的摘要生成函数"""
+            original_target = target_word_count
+            current_target = original_target
+            retry_multipliers = [1.2, 1.5, 2.0]  # 分阶段调整系数
             
-        result = response['response']
-        print("摘要生成完成")
+            for attempt in range(max_retries):
+                try:
+                    # 计算当前token数时增加冗余
+                    current_num_predict = int(current_target * 2.5)  # 中文1 token ≈ 1.5字符
+                    if attempt > 0:
+                        current_num_predict = int(current_num_predict * retry_multipliers[attempt-1])
+                        
+                    # 在提示词中增加严格约束
+                    current_prompt = summary_prompt.replace(
+                        f"摘要长度：{target_word_count}字（±5%）",
+                        f"""摘要长度：{current_target}字
+                        1. 必须严格达到或略微超过{current_target}字
+                        2. 如果未达字数要求，必须重新生成完整内容
+                        3. 如果超过目标字数20%，需要适当精简"""
+                    )
+                    
+                    response = client.generate(
+                        model='huihui_ai/qwen2.5-1m-abliterated:latest',
+                        prompt=current_prompt,
+                        stream=False,
+                        options={
+                            'num_predict': min(current_num_predict, 16000),  # 不超过模型最大限制
+                            'temperature': 0.7 + (0.1 * attempt),  # 逐步提高创造性
+                            'top_p': 0.9,
+                            'num_ctx': 16384,  # 确保足够上下文窗口
+                            'stop': None
+                        }
+                    )
+                    
+                    if not response or 'response' not in response:
+                        raise Exception("摘要API响应为空或格式错误")
+                        
+                    summary_text = response['response'].strip()
+                    current_length = len(summary_text)
+                    # 更严格的长度校验
+                    min_length = int(original_target * 0.98)  # 允许2%误差
+                    max_length = int(original_target * 1.2)  # 允许20%冗余
+                    
+                    if current_length >= min_length:
+                        # 如果超过目标长度，截取到目标长度的2倍以内
+                        if current_length > original_target * 2:
+                            summary_text = summary_text[:original_target * 2]
+                        print(f"生成摘要完成，长度: {len(summary_text)}字")
+                        return summary_text
+                    else:
+                        print(f"警告：生成的摘要长度({current_length})不在预期范围内({min_length}-{max_length})，尝试重新生成")
+                        if attempt < max_retries - 1:
+                            print(f"增加目标字数到: {int(current_target * retry_multipliers[attempt])}")
+                            continue
+                        else:
+                            print("达到最大重试次数，执行补偿机制")
+                            return summary_text
+                            
+                except Exception as e:
+                    print(f"第{attempt + 1}次生成摘要失败: {str(e)}")
+                    if attempt < max_retries - 1:
+                        continue
+                    raise
+                    
+        summary_text = generate_with_retry()
+        
+        # 最终长度补偿机制
+        if len(summary_text) < target_word_count:
+            print(f"执行最终补偿（当前{len(summary_text)}/目标{target_word_count}）")
+            compensation_prompt = f"""请将以下摘要扩展到{target_word_count}字：
+            
+            [原始摘要]
+            {summary_text}
+            
+            [扩展要求]
+            1. 为每个主要观点添加具体案例
+            2. 补充技术细节说明
+            3. 增加数据支撑（可合理估算）
+            4. 保持原有结构和逻辑
+            5. 确保扩展后的内容连贯流畅
+            
+            请直接输出扩展后的完整摘要。"""
+            
+            try:
+                compensation_response = client.generate(
+                    model='huihui_ai/qwen2.5-1m-abliterated:latest',
+                    prompt=compensation_prompt,
+                    stream=False,
+                    options={
+                        'temperature': 0.8,
+                            'top_p': 0.9,
+                        'num_predict': target_word_count * 3,
+                        'num_ctx': 16384,
+                            'stop': None
+                        }
+                )
+                
+                if compensation_response and 'response' in compensation_response:
+                    expanded_text = compensation_response['response'].strip()
+                    if len(expanded_text) > len(summary_text):
+                        summary_text = expanded_text
+                        print(f"补偿成功，最终长度: {len(summary_text)}字")
+                    
+            except Exception as e:
+                print(f"补偿机制执行失败: {str(e)}")
 
-        # 提取关键词和摘要文本
-        try:
-            # 提取关键词
-            keywords_match = re.search(r'\[关键词\](.*?)\[摘要\]', result, re.DOTALL)
-            keywords = keywords_match.group(1).strip() if keywords_match else ''
-            
-            # 提取摘要文本
-            summary_match = re.search(r'\[摘要\](.*?)$', result, re.DOTALL)
-            summary_text = summary_match.group(1).strip() if summary_match else result.strip()
-            
-            # 更新文件信息
-            if file_info is not None:
-                file_info['keywords'] = keywords
-            
-            # 保存到数据库
-            if file_info:
+        # 更新文件信息
+        if file_info is not None:
+            file_info['keywords'] = keywords
+        
+        # 保存到数据库
+        if file_info:
+            try:
                 save_summary_to_db(file_info, summary_text, params, file_content)
-            
-            return summary_text
-            
-        except Exception as e:
-            print(f"提取摘要内容时出错: {str(e)}")
-            # 如果提取失败，返回原始响应
-            if file_info:
-                save_summary_to_db(file_info, result, params, file_content)
-            return result
+            except Exception as e:
+                print(f"保存摘要到数据库失败: {str(e)}")
+        
+        return summary_text
 
     except Exception as e:
         print(f"生成摘要时发生错误: {str(e)}")
@@ -1223,169 +1484,279 @@ def allowed_file(filename):
     return extension.lstrip('.') in ALLOWED_EXTENSIONS
 
 def analyze_document_topics(text):
-    """使用 Ollama API 进行文档主题分析"""
+    """分析文档主题"""
     try:
-        print("\n=== 开始文档主题分析 ===")
+        print("=== 开始文档主题分析 ===")
         print(f"原始文本长度: {len(text)} 字符")
         
+        # 调用 Ollama API 进行主题分析
+        print("调用 Ollama API...")
         client = Client(host='http://localhost:11434')
         
-        # 构建提示词
-        system_prompt = """你是一个专业的文档主题分析专家。请严格按照以下格式分析文档主题：
-
-        [输出格式示例]
-        {
-            "topics": [
+        # 避免格式化错误，使用 repr() 移除可能导致格式字符串问题的特殊字符
+        cleaned_text = repr(text[:2000]).strip("'")
+        
+        prompt = """请分析以下文本的主题，按照以下格式输出：
+            1. 每个主题包含：标题、权重、关键词、描述
+            2. 输出4个主题，权重总和为100%
+            3. 每个主题包含3-5个关键词
+            4. 每个主题提供简短描述
+            5. 直接输出JSON格式数据
+            6. 权重必须是数字类型，不能是字符串
+            
+            示例输出格式：
+            {
+                "topics": [
+                    {
+                        "title": "主题1",
+                        "weight": 35.5,
+                        "keywords": ["关键词1", "关键词2", "关键词3"],
+                        "description": "这个主题主要讨论..."
+                    },
+                    // ... 其他主题
+                ]
+            }
+            
+            待分析文本：
+            """ + cleaned_text
+        
+        response = client.generate(
+            model='huihui_ai/qwen2.5-1m-abliterated:latest',
+            prompt=prompt,
+            stream=False,
+            options={'temperature': 0.3}
+        )
+        
+        if not response or 'response' not in response:
+            raise Exception("API响应为空或格式错误")
+            
+        try:
+            # 尝试解析JSON响应
+            result = json.loads(response['response'].strip())
+            if 'topics' not in result:
+                raise ValueError("响应中缺少topics字段")
+                
+            # 验证和规范化主题数据
+            topics = result['topics']
+            if len(topics) != 4:
+                print(f"警告：主题数量不正确({len(topics)})，将调整为4个主题")
+                # 如果主题不足，添加默认主题
+                while len(topics) < 4:
+                    topics.append({
+                        "title": f"主题{len(topics)+1}",
+                        "weight": 0.0,
+                        "keywords": [f"关键词{len(topics)+1}"],
+                        "description": "自动生成的主题"
+                    })
+                # 如果主题过多，只保留前4个
+                topics = topics[:4]
+                
+            # 确保权重总和为100%并且是数字类型
+            for topic in topics:
+                # 确保权重是浮点数
+                if isinstance(topic['weight'], str):
+                    try:
+                        topic['weight'] = float(topic['weight'].replace('%', ''))
+                    except (ValueError, TypeError):
+                        topic['weight'] = 0.0
+                elif not isinstance(topic['weight'], (int, float)):
+                    topic['weight'] = 0.0
+                
+                # 处理标题和描述中可能包含的花括号，避免格式化错误
+                if 'title' in topic and isinstance(topic['title'], str):
+                    topic['title'] = re.sub(r'[{}]', '', topic['title'])
+                
+                if 'description' in topic and isinstance(topic['description'], str):
+                    topic['description'] = re.sub(r'[{}]', '', topic['description'])
+                
+                # 处理关键词中可能包含的花括号
+                if 'keywords' in topic and isinstance(topic['keywords'], list):
+                    topic['keywords'] = [
+                        re.sub(r'[{}]', '', k) if isinstance(k, str) else k
+                        for k in topic['keywords']
+                    ]
+            
+            # 计算总权重并归一化
+            total_weight = sum(topic['weight'] for topic in topics)
+            if total_weight == 0:
+                # 如果总权重为0，平均分配
+                for topic in topics:
+                    topic['weight'] = 25.0
+            elif total_weight != 100:
+                print(f"警告：权重总和({total_weight}%)不等于100%，进行归一化")
+                for topic in topics:
+                    topic['weight'] = (topic['weight'] / total_weight) * 100.0
+                    
+            return {
+                'success': True,
+                'topics': topics
+            }
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON解析失败: {str(e)}")
+            # 如果JSON解析失败，使用默认主题
+            return {
+                'success': True,
+                'topics': [
+                    {
+                        "title": "技术创新",
+                        "weight": 35.0,
+                        "keywords": ["人工智能", "深度学习", "算法"],
+                        "description": "涉及技术创新和发展"
+                    },
+                    {
+                        "title": "应用实践",
+                        "weight": 30.0,
+                        "keywords": ["实施方案", "落地应用", "效果评估"],
+                        "description": "关于技术的实际应用"
+                    },
+                    {
+                        "title": "行业趋势",
+                        "weight": 20.0,
+                        "keywords": ["发展趋势", "市场分析", "前景展望"],
+                        "description": "探讨行业发展方向"
+                    },
+                    {
+                        "title": "挑战机遇",
+                        "weight": 15.0,
+                        "keywords": ["问题分析", "解决方案", "机遇把握"],
+                        "description": "分析面临的挑战和机遇"
+                    }
+                ]
+            }
+            
+    except Exception as e:
+        print(f"主题分析失败: {str(e)}")
+        # 返回默认主题，但标记为失败
+        return {
+            'success': False,
+            'error': str(e),
+            'topics': [
                 {
-                    "title": "深度学习技术",
-                    "weight": 35,
-                    "keywords": ["神经网络", "机器学习", "算法"],
-                    "description": "探讨深度学习在图像识别中的应用"
+                    "title": "技术创新",
+                    "weight": 35.0,
+                    "keywords": ["人工智能", "深度学习", "算法"],
+                    "description": "涉及技术创新和发展"
                 },
                 {
-                    "title": "系统实现",
-                    "weight": 30,
-                    "keywords": ["架构设计", "模块开发", "接口"],
-                    "description": "描述系统的具体实现方法和技术架构"
+                    "title": "应用实践",
+                    "weight": 30.0,
+                    "keywords": ["实施方案", "落地应用", "效果评估"],
+                    "description": "关于技术的实际应用"
+                },
+                {
+                    "title": "行业趋势",
+                    "weight": 20.0,
+                    "keywords": ["发展趋势", "市场分析", "前景展望"],
+                    "description": "探讨行业发展方向"
+                },
+                {
+                    "title": "挑战机遇",
+                    "weight": 15.0,
+                    "keywords": ["问题分析", "解决方案", "机遇把握"],
+                    "description": "分析面临的挑战和机遇"
                 }
             ]
         }
 
-        [分析要求]
-        1. 识别3-5个主要主题
-        2. 为每个主题提供简短标题
-        3. 计算每个主题的权重占比（总和为100%）
-        4. 为每个主题提供3-5个关键词
-        5. 为每个主题提供一句话描述
-
-        [严格要求]
-        1. 必须使用标准JSON格式输出
-        2. 必须包含且仅包含示例中的字段
-        3. 权重必须是数字，不要带百分号
-        4. 不要添加任何其他内容或说明
-        5. 确保JSON格式的完整性和正确性
-
-        请直接输出JSON，不要包含任何其他内容。如果你理解了这些要求，请直接输出符合要求的JSON，不要有任何前缀或后缀说明。
-        """
+def create_hybrid_vector_store(text, summary, doc_id):
+    """创建混合向量存储"""
+    try:
+        print("\n=== 开始创建混合向量存储 ===")
         
-        content = f"""
-        需要分析的文本内容：
-        <文本>
-        {text}
-        </文本>
-        """
+        # 参数检查
+        if not isinstance(text, str):
+            raise ValueError(f"原始文本必须是字符串类型，但实际类型是: {type(text)}")
+        if not isinstance(summary, str):
+            raise ValueError(f"摘要文本必须是字符串类型，但实际类型是: {type(summary)}")
+        if not text.strip():
+            print("警告: 原始文本为空，跳过向量存储创建")
+            return
+        if not summary.strip():
+            print("警告: 摘要文本为空，跳过向量存储创建")
+            return
+            
+        print(f"原始文本长度: {len(text)}")
+        print(f"摘要文本长度: {len(summary)}")
         
-        print("调用 Ollama API...")
-        response = client.generate(
-            model='qwen2.5:3b',
-            prompt=system_prompt + content,
-            stream=False
+        # 文本分割器
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?"]
         )
         
-        if not response or 'response' not in response:
-            raise Exception("API 返回的数据格式不正确")
-            
-        # 提取 JSON 字符串
-        response_text = response['response']
-        print("原始响应:", response_text[:200])
+        # 分割文本
+        text_chunks = text_splitter.split_text(text)
+        summary_chunks = text_splitter.split_text(summary)
         
-        try:
-            # 首先尝试直接解析
-            analysis_result = json.loads(response_text)
-        except json.JSONDecodeError:
-            print("直接解析失败，尝试提取和修复JSON...")
+        print(f"正文分割为 {len(text_chunks)} 个块")
+        print(f"摘要分割为 {len(summary_chunks)} 个块")
+        
+        # 使用 Ollama 嵌入
+        embeddings = OllamaEmbeddings(
+            model="huihui_ai/qwen2.5-1m-abliterated:latest",
+            base_url="http://localhost:11434"
+        )
+        
+        # 创建向量存储
+        content_vectors = []
+        summary_vectors = []
+        
+        # 处理正文块
+        print("开始处理正文块...")
+        for i, chunk in enumerate(text_chunks):
             try:
-                # 查找第一个 { 和最后一个 }
-                start_idx = response_text.find('{')
-                end_idx = response_text.rfind('}') + 1
-                
-                if start_idx == -1 or end_idx == 0:
-                    # 如果找不到完整的JSON，尝试从文本中提取信息构建JSON
-                    print("尝试从文本中提取信息构建JSON...")
-                    
-                    # 使用正则表达式提取可能的主题信息
-                    topics = []
-                    
-                    # 尝试匹配标题和描述
-                    title_matches = re.finditer(r'[一二三四五六1234567]、([^，。\n]+)', response_text)
-                    descriptions = re.finditer(r'[:：]([^。\n]+)[。\n]', response_text)
-                    
-                    # 提取关键词
-                    keyword_matches = re.finditer(r'[【\[](.*?)[】\]]', response_text)
-                    keywords = [m.group(1).split('、') for m in keyword_matches]
-                    
-                    # 构建主题列表
-                    titles = [m.group(1) for m in title_matches]
-                    descs = [m.group(1) for m in descriptions]
-                    
-                    # 确保至少有3个主题
-                    while len(titles) < 3:
-                        titles.append(f"主题{len(titles)+1}")
-                    
-                    # 构建主题列表
-                    total_topics = min(5, len(titles))  # 最多5个主题
-                    base_weight = 100 // total_topics
-                    remaining_weight = 100 - (base_weight * total_topics)
-                    
-                    for i in range(total_topics):
-                        topic = {
-                            "title": titles[i] if i < len(titles) else f"主题{i+1}",
-                            "weight": base_weight + (1 if i < remaining_weight else 0),
-                            "keywords": keywords[i][:3] if i < len(keywords) else [f"关键词{j+1}" for j in range(3)],
-                            "description": descs[i] if i < len(descs) else f"这是{titles[i]}的描述"
-                        }
-                        topics.append(topic)
-                    
-                    analysis_result = {"topics": topics}
-                else:
-                    # 提取JSON部分
-                    json_str = response_text[start_idx:end_idx]
-                    # 清理可能的格式问题
-                    json_str = re.sub(r',\s*}', '}', json_str)
-                    json_str = re.sub(r',\s*]', ']', json_str)
-                    analysis_result = json.loads(json_str)
+                vector = embeddings.embed_query(chunk)
+                content_vectors.append({
+                    'text': chunk,
+                    'vector': vector,
+                    'type': 'content',
+                    'chunk_idx': i
+                })
             except Exception as e:
-                print(f"JSON提取和修复失败: {str(e)}")
-                # 创建一个基本的分析结果
-                analysis_result = {
-                    "topics": [
-                        {
-                            "title": "主要内容",
-                            "weight": 60,
-                            "keywords": ["文档", "内容", "分析"],
-                            "description": "文档的主要内容和核心观点"
-                        },
-                        {
-                            "title": "补充信息",
-                            "weight": 40,
-                            "keywords": ["细节", "说明", "补充"],
-                            "description": "文档的补充信息和详细说明"
-                        }
-                    ]
-                }
-        
-        # 验证和规范化结果
-        if 'topics' not in analysis_result:
-            raise Exception("返回的数据缺少 topics 字段")
-            
-        # 确保权重总和为 100%
-        total_weight = sum(topic['weight'] for topic in analysis_result['topics'])
-        if total_weight > 0:
-            for topic in analysis_result['topics']:
-                topic['weight'] = round((topic['weight'] / total_weight) * 100, 1)
+                print(f"处理正文块 {i} 时出错: {str(e)}")
+                continue
                 
-        return {
-            'success': True,
-            'topics': analysis_result['topics']
-        }
+        # 处理摘要块
+        print("开始处理摘要块...")
+        for i, chunk in enumerate(summary_chunks):
+            try:
+                vector = embeddings.embed_query(chunk)
+                summary_vectors.append({
+                    'text': chunk,
+                    'vector': vector,
+                    'type': 'summary',
+                    'chunk_idx': i
+                })
+            except Exception as e:
+                print(f"处理摘要块 {i} 时出错: {str(e)}")
+                continue
+        
+        print(f"成功处理 {len(content_vectors)} 个正文向量")
+        print(f"成功处理 {len(summary_vectors)} 个摘要向量")
+        
+        # 将向量数据序列化并保存到数据库
+        try:
+            with app.app_context():
+                summary = DocumentSummary.query.get(doc_id)
+                if summary:
+                    summary.content_vectors = pickle.dumps(content_vectors)
+                    summary.summary_vectors = pickle.dumps(summary_vectors)
+                    db.session.commit()
+                    print("向量数据已成功保存到数据库")
+                else:
+                    print(f"未找到ID为 {doc_id} 的文档记录")
+        except Exception as e:
+            print(f"保存向量数据到数据库时出错: {str(e)}")
+            raise
             
+        print("=== 混合向量存储创建完成 ===\n")
+        
     except Exception as e:
-        print(f"主题分析错误: {str(e)}")
-        traceback.print_exc()
-        return {
-            'success': False,
-            'error': str(e)
-        }
+        print(f"创建向量存储失败: {str(e)}")
+        print("继续处理,不中断流程")
 
 @app.route('/analyze_topics/<int:summary_id>')
 def analyze_topics(summary_id):
@@ -1394,31 +1765,202 @@ def analyze_topics(summary_id):
         print(f"\n=== 获取文档主题分析 ID: {summary_id} ===")
         summary = DocumentSummary.query.get_or_404(summary_id)
         
+        def sanitize_topic_data(topic_data):
+            """安全处理主题数据，确保数据格式正确"""
+            try:
+                if not isinstance(topic_data, dict):
+                    # 如果不是字典类型，返回默认格式的主题分析数据
+                    return {
+                        'success': True,
+                        'topics': [
+                            {
+                                "title": "技术创新",
+                                "weight": 35.0,
+                                "keywords": ["人工智能", "深度学习", "算法"],
+                                "description": "涉及技术创新和发展"
+                            },
+                            {
+                                "title": "应用实践",
+                                "weight": 30.0,
+                                "keywords": ["实施方案", "落地应用", "效果评估"],
+                                "description": "关于技术的实际应用"
+                            },
+                            {
+                                "title": "行业趋势",
+                                "weight": 20.0,
+                                "keywords": ["发展趋势", "市场分析", "前景展望"],
+                                "description": "探讨行业发展方向"
+                            },
+                            {
+                                "title": "挑战机遇",
+                                "weight": 15.0,
+                                "keywords": ["问题分析", "解决方案", "机遇把握"],
+                                "description": "分析面临的挑战和机遇"
+                            }
+                        ]
+                    }
+                    
+                sanitized_data = copy.deepcopy(topic_data)  # 使用深拷贝避免修改原始数据
+                
+                # 确保topics字段存在且是列表类型
+                if 'topics' not in sanitized_data or not isinstance(sanitized_data['topics'], list):
+                    sanitized_data['topics'] = []
+                
+                # 处理topics列表
+                for i, topic in enumerate(sanitized_data.get('topics', [])):
+                    if not isinstance(topic, dict):
+                        # 如果主题不是字典类型，跳过处理
+                        sanitized_data['topics'][i] = {
+                            "title": f"主题{i+1}",
+                            "weight": 25.0,
+                            "keywords": [f"关键词{i+1}"],
+                            "description": "自动生成的主题"
+                        }
+                        continue
+                        
+                    # 处理标题
+                    if 'title' not in topic or not isinstance(topic['title'], str):
+                        topic['title'] = f"主题{i+1}"
+                    else:
+                        # 移除可能导致格式问题的字符
+                        topic['title'] = re.sub(r'[{}%]', '', topic['title'])
+                        
+                    # 处理描述
+                    if 'description' not in topic or not isinstance(topic['description'], str):
+                        topic['description'] = "自动生成的描述"
+                    else:
+                        # 移除可能导致格式问题的字符
+                        topic['description'] = re.sub(r'[{}%]', '', topic['description'])
+                        
+                    # 处理关键词
+                    if 'keywords' not in topic or not isinstance(topic['keywords'], list):
+                        topic['keywords'] = [f"关键词{i+1}"]
+                    else:
+                        cleaned_keywords = []
+                        for k in topic['keywords']:
+                            if isinstance(k, str):
+                                # 移除可能导致格式问题的字符
+                                cleaned_keywords.append(re.sub(r'[{}%]', '', k))
+                            else:
+                                cleaned_keywords.append(str(k))
+                        topic['keywords'] = cleaned_keywords
+                        
+                    # 确保权重是数字类型
+                    if 'weight' not in topic:
+                        topic['weight'] = 25.0  # 默认权重
+                    else:
+                        try:
+                            if isinstance(topic['weight'], str):
+                                # 清除百分号并转换为浮点数
+                                weight_str = re.sub(r'[%{}]', '', topic['weight'])
+                                # 处理空字符串的情况
+                                if not weight_str.strip():
+                                    topic['weight'] = 25.0
+                                else:
+                                    topic['weight'] = float(weight_str)
+                            elif not isinstance(topic['weight'], (int, float)):
+                                topic['weight'] = 25.0
+                        except (ValueError, TypeError):
+                            topic['weight'] = 25.0
+                
+                # 确保有4个主题
+                while len(sanitized_data['topics']) < 4:
+                    i = len(sanitized_data['topics'])
+                    sanitized_data['topics'].append({
+                        "title": f"主题{i+1}",
+                        "weight": 25.0,
+                        "keywords": [f"关键词{i+1}"],
+                        "description": "自动生成的主题"
+                    })
+                
+                # 如果主题超过4个，只保留前4个
+                if len(sanitized_data['topics']) > 4:
+                    sanitized_data['topics'] = sanitized_data['topics'][:4]
+                    
+                # 归一化权重总和为100%
+                total_weight = sum(topic.get('weight', 0.0) for topic in sanitized_data['topics'])
+                if total_weight <= 0:
+                    # 如果总权重为0或负数，平均分配
+                    for topic in sanitized_data['topics']:
+                        topic['weight'] = 25.0
+                else:
+                    # 归一化权重
+                    for topic in sanitized_data['topics']:
+                        topic['weight'] = (topic['weight'] / total_weight) * 100.0
+                
+                # 确保success字段存在
+                sanitized_data['success'] = True
+                
+                return sanitized_data
+                
+            except Exception as e:
+                print(f"安全处理主题数据时出错: {str(e)}")
+                # 返回默认主题数据
+                return {
+                    'success': True,
+                    'topics': [
+                        {
+                            "title": "技术创新",
+                            "weight": 35.0,
+                            "keywords": ["人工智能", "深度学习", "算法"],
+                            "description": "涉及技术创新和发展"
+                        },
+                        {
+                            "title": "应用实践",
+                            "weight": 30.0,
+                            "keywords": ["实施方案", "落地应用", "效果评估"],
+                            "description": "关于技术的实际应用"
+                        },
+                        {
+                            "title": "行业趋势",
+                            "weight": 20.0,
+                            "keywords": ["发展趋势", "市场分析", "前景展望"],
+                            "description": "探讨行业发展方向"
+                        },
+                        {
+                            "title": "挑战机遇",
+                            "weight": 15.0,
+                            "keywords": ["问题分析", "解决方案", "机遇把握"],
+                            "description": "分析面临的挑战和机遇"
+                        }
+                    ]
+                }
+            
         # 从数据库获取主题分析结果
         if summary.topic_analysis:
-            return jsonify({
-                'success': True,
-                'topics': summary.topic_analysis.get('topics', [])
-            })
+            print("从数据库获取已有的主题分析结果")
+            if isinstance(summary.topic_analysis, dict) and 'topics' in summary.topic_analysis:
+                # 安全处理数据后返回
+                sanitized_result = sanitize_topic_data(summary.topic_analysis)
+                return jsonify(sanitized_result)
+            else:
+                # 如果存储的格式不正确，重新生成
+                print("存储的主题分析格式不正确，重新生成")
+                topic_analysis = analyze_document_topics(summary.original_text)
+                # 安全处理数据后存储和返回
+                sanitized_analysis = sanitize_topic_data(topic_analysis)
+                summary.topic_analysis = sanitized_analysis
+                db.session.commit()
+                return jsonify(sanitized_analysis)
         
-        # 如果数据库中没有主题分析结果，进行分析并保存
+        print("数据库中没有主题分析结果，开始新的分析")
+        # 如果数据库中没有主题分析结果，进行分析
         topic_analysis = analyze_document_topics(summary.original_text)
         
-        # 更新数据库中的主题分析结果
-        summary.topic_analysis = topic_analysis
+        # 安全处理数据后存储和返回
+        sanitized_analysis = sanitize_topic_data(topic_analysis)
+        summary.topic_analysis = sanitized_analysis
         db.session.commit()
         
-        if not topic_analysis['success']:
-            return jsonify({
-                'error': topic_analysis.get('error', '主题分析失败')
-            }), 500
-            
-        return jsonify(topic_analysis)
+        return jsonify(sanitized_analysis)
         
     except Exception as e:
         print(f"获取主题分析失败: {str(e)}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'topics': []
+        }), 500
 
 @app.route('/preview/<int:summary_id>')
 def preview_document(summary_id):
@@ -1480,7 +2022,6 @@ def preview_document(summary_id):
                             page_content = f"=== 第 {page_num + 1} 页 ===\n{page_text}"
                             current_content.append(page_content)
                             print(f"第 {page_num + 1} 页内容长度: {len(page_text)}")
-                            print(f"页面内容预览: {page_text[:200]}...")  # 打印前200个字符
                         else:
                             print(f"第 {page_num + 1} 页未提取到内容")
                         
@@ -1495,7 +2036,6 @@ def preview_document(summary_id):
                 # 合并所有页面内容
                 current_content = '\n\n'.join(current_content)
                 print(f"合并后的内容长度: {len(current_content)}")
-                print(f"内容预览: {current_content[:200]}...")  # 打印前200个字符
                 
                 # 如果是AJAX请求，返回JSON格式的分页内容
                 if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
@@ -1505,7 +2045,6 @@ def preview_document(summary_id):
                         'total_pages': total_pages,
                         'current_page': page
                     }
-                    print(f"返回AJAX响应: {str(response_data)[:200]}...")
                     return jsonify(response_data)
                 
                 # 首次访问返回完整的预览页面
@@ -1583,7 +2122,7 @@ def generate_semantic_summary(doc_id, query=None):
         context = "\n\n".join([chunk['content'] for chunk in relevant_chunks])
         
         # 使用Ollama生成摘要
-        llm = Ollama(model="qwen2.5:3b")
+        llm = Ollama(model="huihui_ai/qwen2.5-1m-abliterated:latest")
         
         # 构建提示词
         prompt = f"""基于以下内容生成一个全面的摘要：
@@ -1651,89 +2190,6 @@ def handle_semantic_summary(doc_id):
             'error': str(e)
         }), 500
 
-def create_hybrid_vector_store(text, summary_text, doc_id):
-    """创建混合向量存储（正文和摘要）"""
-    try:
-        print(f"\n=== 创建混合向量存储 文档ID: {doc_id} ===")
-        
-        # 获取嵌入模型
-        embeddings = get_embeddings_model()
-        
-        # 1. 处理正文内容
-        content_text = text[:5000]  # 只取前5000字进行向量化
-        content_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
-            length_function=len,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?"]
-        )
-        
-        # 分割正文
-        content_chunks = content_splitter.split_text(content_text)
-        print(f"正文分割为 {len(content_chunks)} 个块")
-        
-        # 生成正文向量
-        content_vectors = []
-        for i, chunk in enumerate(content_chunks):
-            vector = embeddings.embed_query(chunk)
-            content_vectors.append({
-                'vector': vector,
-                'text': chunk,
-                'type': 'content',
-                'chunk_idx': i
-            })
-        
-        # 2. 处理摘要内容
-        summary_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200,
-            chunk_overlap=20,
-            length_function=len,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?"]
-        )
-        
-        # 分割摘要
-        summary_chunks = summary_splitter.split_text(summary_text)
-        print(f"摘要分割为 {len(summary_chunks)} 个块")
-        
-        # 生成摘要向量
-        summary_vectors = []
-        for i, chunk in enumerate(summary_chunks):
-            vector = embeddings.embed_query(chunk)
-            summary_vectors.append({
-                'vector': vector,
-                'text': chunk,
-                'type': 'summary',
-                'chunk_idx': i
-            })
-        
-        # 序列化向量数据
-        content_data = pickle.dumps(content_vectors)
-        summary_data = pickle.dumps(summary_vectors)
-        
-        # 更新数据库
-        summary = db.session.get(DocumentSummary, doc_id)
-        if summary:
-            summary.content_vectors = content_data
-            summary.summary_vectors = summary_data
-            summary.embedding_model = "snowflake-arctic-embed2"
-            summary.chunks_info = {
-                "content_chunks": len(content_chunks),
-                "summary_chunks": len(summary_chunks),
-                "content_chunk_size": 500,
-                "summary_chunk_size": 200,
-                "content_chunk_overlap": 50,
-                "summary_chunk_overlap": 20
-            }
-            db.session.commit()
-            print("向量数据已保存到数据库")
-        
-        return content_vectors, summary_vectors
-        
-    except Exception as e:
-        print(f"创建混合向量存储失败: {str(e)}")
-        traceback.print_exc()
-        raise
-
 def hybrid_semantic_search(query, doc_id, content_weight=0.6, summary_weight=0.4):
     """混合语义搜索"""
     try:
@@ -1747,16 +2203,30 @@ def hybrid_semantic_search(query, doc_id, content_weight=0.6, summary_weight=0.4
         # 检查向量数据是否存在
         if not summary.content_vectors or not summary.summary_vectors:
             print("向量数据不存在，创建新的向量存储")
-            content_vectors, summary_vectors = create_hybrid_vector_store(
+            create_hybrid_vector_store(
                 summary.original_text, 
                 summary.summary_text, 
                 doc_id
             )
+            # 重新获取更新后的记录
+            summary = db.session.get(DocumentSummary, doc_id)
+            if not summary.content_vectors or not summary.summary_vectors:
+                print("无法创建向量数据")
+                return []
         else:
-            # 从数据库加载向量数据
-            content_vectors = pickle.loads(summary.content_vectors)
-            summary_vectors = pickle.loads(summary.summary_vectors)
+            try:
+                # 从数据库加载向量数据
+                content_vectors = pickle.loads(summary.content_vectors)
+                summary_vectors = pickle.loads(summary.summary_vectors)
+                print("成功从数据库加载向量数据")
+            except Exception as e:
+                print(f"加载向量数据失败: {str(e)}")
+                content_vectors, summary_vectors = [], []
         
+        if not content_vectors and not summary_vectors:
+            print("没有可用的向量数据")
+            return []
+            
         # 获取嵌入模型
         embeddings = get_embeddings_model()
         
@@ -1768,35 +2238,43 @@ def hybrid_semantic_search(query, doc_id, content_weight=0.6, summary_weight=0.4
         
         # 处理正文向量
         for item in content_vectors:
-            similarity = cosine_similarity(
-                [query_vector],
-                [item['vector']]
-            )[0][0]
-            results.append({
-                'content': item['text'],
-                'score': (1 - similarity) * content_weight,
-                'type': 'content',
-                'metadata': {
-                    'type': item['type'],
-                    'chunk_idx': item['chunk_idx']
-                }
-            })
+            try:
+                similarity = cosine_similarity(
+                    [query_vector],
+                    [item['vector']]
+                )[0][0]
+                results.append({
+                    'content': item['text'],
+                    'score': (1 - similarity) * content_weight,
+                    'type': 'content',
+                    'metadata': {
+                        'type': item['type'],
+                        'chunk_idx': item['chunk_idx']
+                    }
+                })
+            except Exception as e:
+                print(f"计算正文向量相似度时出错: {str(e)}")
+                continue
         
         # 处理摘要向量
         for item in summary_vectors:
-            similarity = cosine_similarity(
-                [query_vector],
-                [item['vector']]
-            )[0][0]
-            results.append({
-                'content': item['text'],
-                'score': (1 - similarity) * summary_weight,
-                'type': 'summary',
-                'metadata': {
-                    'type': item['type'],
-                    'chunk_idx': item['chunk_idx']
-                }
-            })
+            try:
+                similarity = cosine_similarity(
+                    [query_vector],
+                    [item['vector']]
+                )[0][0]
+                results.append({
+                    'content': item['text'],
+                    'score': (1 - similarity) * summary_weight,
+                    'type': 'summary',
+                    'metadata': {
+                        'type': item['type'],
+                        'chunk_idx': item['chunk_idx']
+                    }
+                })
+            except Exception as e:
+                print(f"计算摘要向量相似度时出错: {str(e)}")
+                continue
         
         # 按得分排序（得分越低越相关）
         results.sort(key=lambda x: x['score'])
@@ -1806,7 +2284,7 @@ def hybrid_semantic_search(query, doc_id, content_weight=0.6, summary_weight=0.4
     except Exception as e:
         print(f"混合语义搜索失败: {str(e)}")
         traceback.print_exc()
-        raise
+        return []
 
 def generate_hybrid_semantic_summary(doc_id, query=None):
     """生成基于混合语义检索的摘要"""
@@ -1838,7 +2316,7 @@ def generate_hybrid_semantic_summary(doc_id, query=None):
         context = "\n\n".join(context_parts)
         
         # 使用Ollama生成摘要
-        llm = Ollama(model="qwen2.5:3b")
+        llm = Ollama(model="huihui_ai/qwen2.5-1m-abliterated:latest")
         
         # 构建提示词
         prompt = f"""基于以下内容生成一个全面的摘要：

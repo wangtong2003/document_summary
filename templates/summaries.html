@@ -1059,7 +1059,14 @@ ${summary.summary_text || '无摘要内容'}
                 // 准备图表数据
                 const topics = data.topics;
                 const labels = topics.map(topic => topic.title);
-                const values = topics.map(topic => topic.weight);
+                const values = topics.map(topic => {
+                    // 确保权重是数字类型
+                    let weight = topic.weight;
+                    if (typeof weight === 'string') {
+                        weight = parseFloat(weight.replace('%', '')) || 0;
+                    }
+                    return weight;
+                });
                 
                 // 创建新图表
                 const newChart = new Chart(chartCanvas, {
@@ -1101,8 +1108,13 @@ ${summary.summary_text || '无摘要内容'}
                                     },
                                     label: function(context) {
                                         const topic = topics[context.dataIndex];
+                                        // 确保权重是数字类型
+                                        let weight = topic.weight;
+                                        if (typeof weight === 'string') {
+                                            weight = parseFloat(weight.replace('%', '')) || 0;
+                                        }
                                         return [
-                                            `比重: ${topic.weight.toFixed(1)}%`,
+                                            `比重: ${weight.toFixed(1)}%`,
                                             '关键词:',
                                             ...topic.keywords.map(word => `• ${word}`)
                                         ];
@@ -1114,7 +1126,13 @@ ${summary.summary_text || '无摘要内容'}
                             y: {
                                 beginAtZero: true,
                                 ticks: {
-                                    callback: value => `${value.toFixed(0)}%`
+                                    callback: function(value) {
+                                        // 确保值是数字类型
+                                        if (typeof value === 'string') {
+                                            value = parseFloat(value) || 0;
+                                        }
+                                        return `${value.toFixed(0)}%`;
+                                    }
                                 },
                                 grid: {
                                     color: 'rgba(0, 0, 0, 0.05)'
@@ -1133,20 +1151,32 @@ ${summary.summary_text || '无摘要内容'}
                 const keywordsContainer = container.querySelector('.topic-keywords');
                 const keywordsHtml = topics.map((topic, idx) => {
                     const color = colors[idx % colors.length];
+                    // 确保权重是数字类型
+                    let weight = topic.weight;
+                    if (typeof weight === 'string') {
+                        weight = parseFloat(weight.replace('%', '')) || 0;
+                    }
+                    
+                    // 安全处理可能包含花括号的文本
+                    const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : `主题${idx+1}`;
+                    const safeDescription = topic.description ? topic.description.replace(/[{}]/g, '') : '';
+                    
                     return `
                         <div class="topic-group" style="--index: ${idx}">
                             <div class="topic-group-header">
                                 <div class="topic-color" style="background-color: ${color.border}"></div>
-                                <span class="topic-title">${topic.title}</span>
-                                <span class="topic-percentage">${topic.weight.toFixed(1)}%</span>
+                                <span class="topic-title">${safeTitle}</span>
+                                <span class="topic-percentage">${weight.toFixed(1)}%</span>
                             </div>
                             <div class="topic-keywords-list">
-                                ${topic.keywords.map(word => `
-                                    <span class="topic-keyword" style="--topic-color: ${color.border}">${word}</span>
-                                `).join('')}
+                                ${topic.keywords.map(word => {
+                                    // 安全处理可能包含花括号的关键词
+                                    const safeWord = typeof word === 'string' ? word.replace(/[{}]/g, '') : word;
+                                    return `<span class="topic-keyword" style="--topic-color: ${color.border}">${safeWord}</span>`;
+                                }).join('')}
                             </div>
                             <div class="topic-description mt-2">
-                                <small class="text-muted">${topic.description}</small>
+                                <small class="text-muted">${safeDescription}</small>
                             </div>
                         </div>
                     `;
@@ -1187,10 +1217,21 @@ ${summary.summary_text || '无摘要内容'}
                 .then(data => {
                     if (data.success && data.topics) {
                         // 准备饼图数据
-                        const pieData = data.topics.map(topic => ({
-                            name: topic.title,
-                            value: topic.weight
-                        }));
+                        const pieData = data.topics.map(topic => {
+                            // 确保权重是数字类型
+                            let weight = topic.weight;
+                            if (typeof weight === 'string') {
+                                weight = parseFloat(weight.replace('%', '')) || 0;
+                            }
+                            
+                            // 安全处理可能包含花括号的标题
+                            const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : '未命名主题';
+                            
+                            return {
+                                name: safeTitle,
+                                value: weight
+                            };
+                        });
                         
                         // 配置饼图选项
                         const option = {
@@ -1226,17 +1267,34 @@ ${summary.summary_text || '无摘要内容'}
                         
                         // 更新主题详情列表
                         const topicList = document.querySelector('#topicDetails .topic-list');
-                        topicList.innerHTML = data.topics.map(topic => `
-                            <div class="card mb-3">
-                                <div class="card-body">
-                                    <h6 class="card-title">${topic.title} (${topic.weight.toFixed(1)}%)</h6>
-                                    <p class="card-text">
-                                        <strong>关键词：</strong> ${topic.keywords.join('、')}<br>
-                                        <strong>描述：</strong> ${topic.description}
-                                    </p>
+                        topicList.innerHTML = data.topics.map(topic => {
+                            // 确保权重是数字类型
+                            let weight = topic.weight;
+                            if (typeof weight === 'string') {
+                                weight = parseFloat(weight.replace('%', '')) || 0;
+                            }
+                            
+                            // 安全处理可能包含花括号的文本
+                            const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : '未命名主题';
+                            const safeDescription = topic.description ? topic.description.replace(/[{}]/g, '') : '';
+                            
+                            // 安全处理关键词
+                            const safeKeywords = topic.keywords.map(word => 
+                                typeof word === 'string' ? word.replace(/[{}]/g, '') : word
+                            ).join('、');
+                            
+                            return `
+                                <div class="card mb-3">
+                                    <div class="card-body">
+                                        <h6 class="card-title">${safeTitle} (${weight.toFixed(1)}%)</h6>
+                                        <p class="card-text">
+                                            <strong>关键词：</strong> ${safeKeywords}<br>
+                                            <strong>描述：</strong> ${safeDescription}
+                                        </p>
+                                    </div>
                                 </div>
-                            </div>
-                        `).join('');
+                            `;
+                        }).join('');
                     } else {
                         // 显示错误信息
                         document.querySelector('#topicDetails').innerHTML = `

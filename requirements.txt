@@ -38,12 +38,17 @@ sentence-transformers==2.6.0
 # 安全相关
 Werkzeug==3.0.1
 PyJWT==2.8.0
+bcrypt==4.1.2
+itsdangerous==2.2.0
 
 # 其他工具
 requests==2.31.0
 python-dotenv==1.0.1
 ollama>=0.4.4
 asyncio==3.4.3
+tqdm==4.66.2
+pydantic>=2.6.3
+pillow>=10.2.0
 
 # 开发和测试工具
 pytest==8.0.2

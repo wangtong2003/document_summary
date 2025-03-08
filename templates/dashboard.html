@@ -865,6 +865,81 @@
             overflow: visible !important;
             padding-bottom: 3rem !important;
         }
+
+        /* 流式摘要内容样式 */
+        .summary-content {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            line-height: 1.8;
+            font-size: 1rem;
+            color: #333;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            background-color: #fff;
+            min-height: 100px;
+            max-height: 600px;
+            overflow-y: auto;
+            transition: all 0.3s ease;
+            /* 添加光标闪烁效果 */
+            position: relative;
+        }
+
+        /* 模拟打字机光标 */
+        .summary-content::after {
+            content: '|';
+            display: inline-block;
+            color: var(--primary-color);
+            animation: blink 0.8s infinite;
+            font-weight: bold;
+            position: relative;
+        }
+
+        /* 光标闪烁动画 */
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* 当摘要生成完成后隐藏光标 */
+        .summary-content.completed::after {
+            display: none;
+        }
+
+        /* 为流式输出容器添加样式 */
+        .stream-container {
+            padding: 1rem;
+            border-radius: 0.5rem;
+            background-color: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+
+        /* 调整卡片样式以获得更好的视觉效果 */
+        .card {
+            border: none;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .card-header {
+            background-color: #f8fafc;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            padding: 1rem 1.25rem;
+            border-top-left-radius: 0.75rem !important;
+            border-top-right-radius: 0.75rem !important;
+        }
+
+        .card-body {
+            padding: 1.5rem;
+            overflow: visible !important;
+            height: auto !important;
+        }
     </style>
 </head>
 <body>
@@ -930,65 +1005,64 @@
                 
                 <div class="mb-3">
                     <button class="btn btn-outline-secondary w-100" type="button" 
-                            id="advancedOptionsBtn">
+                            id="advancedOptionsBtn" 
+                            onclick="toggleAdvancedOptions()">
                         <i class="bi bi-gear"></i> 高级选项
-                        <i class="bi bi-chevron-down ms-2"></i>
+                        <i class="bi bi-chevron-down ms-2" id="advancedOptionsIcon"></i>
                     </button>
                 </div>
 
                 <div class="collapse" id="advancedOptions">
                     <div class="card card-body mb-3">
                         <div class="mb-3">
-                            <label for="summaryStyle" class="form-label">摘要风格</label>
+                            <label for="summaryStyle" class="form-label">分析深度</label>
                             <select class="form-select" id="summaryStyle">
-                                <option value="casual" selected>通俗易懂</option>
-                                <option value="academic">学术严谨</option>
-                                <option value="professional">专业分析</option>
-                                <option value="creative">创意概述</option>
-                                <option value="journalistic">新闻报道</option>
-                                <option value="technical">技术文档</option>
-                                <option value="business">商务简报</option>
-                                <option value="educational">教育讲解</option>
+                                <option value="basic" selected>基础分析</option>
+                                <option value="comprehensive">全面分析</option>
+                                <option value="critical">批判性分析</option>
+                                <option value="academic">学术深度分析</option>
+                                <option value="practical">实用导向分析</option>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="outputFormat" class="form-label">输出格式</label>
+                            <label for="outputFormat" class="form-label">结构组织</label>
                             <select class="form-select" id="outputFormat">
-                                <option value="paragraph" selected>连续段落</option>
-                                <option value="bullet">要点列表</option>
-                                <option value="outline">大纲结构</option>
-                                <option value="qa">问答形式</option>
-                                <option value="mindmap">思维导图</option>
+                                <option value="narrative" selected>叙述性结构</option>
+                                <option value="hierarchical">层次结构</option>
+                                <option value="comparative">对比分析结构</option>
+                                <option value="problem_solution">问题-解决方案</option>
+                                <option value="chronological">时间序列结构</option>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="focusArea" class="form-label">关注点</label>
+                            <label for="focusArea" class="form-label">思维模式</label>
                             <select class="form-select" id="focusArea">
-                                <option value="general" selected>综合概述</option>
-                                <option value="main_points">主要观点</option>
-                                <option value="methodology">方法论</option>
-                                <option value="conclusion">结论导向</option>
-                                <option value="analysis">分析评价</option>
-                                <option value="practical">实践应用</option>
+                                <option value="analytical" selected>分析性思维</option>
+                                <option value="synthetic">综合性思维</option>
+                                <option value="critical">批判性思维</option>
+                                <option value="creative">创造性思维</option>
+                                <option value="systems">系统性思维</option>
+                                <option value="strategic">战略性思维</option>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="expertiseLevel" class="form-label">专业程度</label>
+                            <label for="expertiseLevel" class="form-label">推理方式</label>
                             <select class="form-select" id="expertiseLevel">
-                                <option value="beginner" selected>入门级</option>
-                                <option value="intermediate">进阶</option>
-                                <option value="advanced">专家级</option>
-                                <option value="expert">权威级</option>
+                                <option value="deductive" selected>演绎推理</option>
+                                <option value="inductive">归纳推理</option>
+                                <option value="abductive">溯因推理</option>
+                                <option value="analogical">类比推理</option>
+                                <option value="causal">因果推理</option>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="languageStyle" class="form-label">语言风格</label>
+                            <label for="languageStyle" class="form-label">语言精确度</label>
                             <select class="form-select" id="languageStyle">
-                                <option value="neutral" selected>中性客观</option>
-                                <option value="formal">正式严谨</option>
-                                <option value="informal">轻松活泼</option>
-                                <option value="professional">专业术语</option>
-                                <option value="simple">简单直白</option>
+                                <option value="precise" selected>高精确度</option>
+                                <option value="balanced">平衡表达</option>
+                                <option value="nuanced">细微差别表达</option>
+                                <option value="simplified">简化表达</option>
+                                <option value="technical">技术术语精确</option>
                             </select>
                         </div>
                     </div>
@@ -1234,11 +1308,11 @@
                             </div>
                             <button class="file-preview-remove" onclick="removeFile(${index})" title="移除">
                                 <i class="bi bi-x"></i>
-                                </button>
-                            </div>
+                            </button>
                         </div>
-                    `;
-                });
+                    </div>
+                `;
+            });
 
             filePreviewArea.innerHTML = previewHtml;
         }
@@ -1362,6 +1436,7 @@
                 formData.append('summary_length', document.getElementById('summaryLength').value);
                 formData.append('target_language', document.getElementById('targetLanguage').value);
                 formData.append('summary_style', document.getElementById('summaryStyle').value);
+                formData.append('output_format', document.getElementById('outputFormat').value);
                 formData.append('focus_area', document.getElementById('focusArea').value);
                 formData.append('expertise_level', document.getElementById('expertiseLevel').value);
                 formData.append('language_style', document.getElementById('languageStyle').value);
@@ -1371,129 +1446,193 @@
                     formData.append('file', selectedFiles[i]);
                 }
 
-                // 发送请求
-                const response = await fetch('/process_document', {
+                // 显示处理结果容器
+                const chatBody = document.getElementById('chatBody');
+                chatBody.innerHTML = '<div class="markdown-body stream-container"></div>';
+                const streamContainer = document.querySelector('.stream-container');
+                
+                // 创建文件处理结果的容器
+                selectedFiles.forEach((file, idx) => {
+                    const fileCardId = `file-result-${idx}`;
+                    const fileCardHtml = `
+                        <div class="card mb-4" id="${fileCardId}">
+                            <div class="card-header">
+                                <h5 class="mb-0">
+                                    <i class="bi ${getFileIcon(file.name)}"></i>
+                                    ${escapeHtml(file.name)}
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="summary-content">
+                                    <div class="spinner-border spinner-border-sm text-primary me-2" role="status">
+                                        <span class="visually-hidden">加载中...</span>
+                                    </div>
+                                    正在处理...
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    streamContainer.innerHTML += fileCardHtml;
+                });
+
+                // 发送请求并处理流式响应
+                const response = await fetch('/process_document_stream', {
                     method: 'POST',
                     body: formData
                 });
 
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || '处理文件时发生错误');
+                    if (response.headers.get('content-type')?.includes('application/json')) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || '处理文件时发生错误');
+                    } else {
+                        throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+                    }
                 }
 
-                const result = await response.json();
+                // 获取响应流的读取器
+                const reader = response.body.getReader();
+                // 用于解码收到的数据块
+                const decoder = new TextDecoder('utf-8');
                 
+                // 当前活动文件信息
+                let currentFileIdx = 0;
+                let currentFileContent = "";
+                
+                // 处理流式数据
+                while (true) {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) {
+                        console.log('数据流接收完成');
+                        break;
+                    }
+                    
+                    // 解码接收到的数据块
+                    const chunk = decoder.decode(value, { stream: true });
+                    console.log('收到数据块:', chunk.length > 50 ? chunk.substring(0, 50) + '...' : chunk);
+                    
+                    // 检查是否有特殊标记
+                    if (chunk.includes('FILE_START:')) {
+                        // 新文件开始
+                        const match = chunk.match(/FILE_START:(\d+):(.+?)(?:\n|$)/);
+                        if (match) {
+                            currentFileIdx = parseInt(match[1]);
+                            const fileName = match[2];
+                            console.log(`开始处理文件 ${currentFileIdx}: ${fileName}`);
+                            currentFileContent = "";
+                            
+                            // 更新对应的文件卡片
+                            const fileCard = document.getElementById(`file-result-${currentFileIdx}`);
+                            if (fileCard) {
+                                const cardBody = fileCard.querySelector('.card-body');
+                                cardBody.innerHTML = `<div class="summary-content" id="summary-content-${currentFileIdx}"></div>`;
+                            }
+                        }
+                    } else if (chunk.includes('FILE_ERROR:')) {
+                        // 文件处理错误
+                        const match = chunk.match(/FILE_ERROR:(\d+):(.+?)(?:\n|$)/);
+                        if (match) {
+                            const errorFileIdx = parseInt(match[1]);
+                            const errorMsg = match[2];
+                            console.error(`文件 ${errorFileIdx} 处理错误: ${errorMsg}`);
+                            
+                            // 更新对应的文件卡片显示错误
+                            const fileCard = document.getElementById(`file-result-${errorFileIdx}`);
+                            if (fileCard) {
+                                const cardBody = fileCard.querySelector('.card-body');
+                                cardBody.innerHTML = `<div class="alert alert-danger">${errorMsg}</div>`;
+                            }
+                        }
+                    } else if (chunk.includes('FILE_END:')) {
+                        // 文件处理完成
+                        const match = chunk.match(/FILE_END:(\d+)(?:\n|$)/);
+                        if (match) {
+                            const endFileIdx = parseInt(match[1]);
+                            console.log(`文件 ${endFileIdx} 处理完成`);
+                            
+                            // 处理完成的文件内容
+                            const summaryContent = document.getElementById(`summary-content-${endFileIdx}`);
+                            if (summaryContent) {
+                                // 添加完成标记，移除光标效果
+                                summaryContent.classList.add('completed');
+                                
+                                // 应用markdown渲染等处理
+                                const processed = processMarkdown(currentFileContent);
+                                summaryContent.innerHTML = processed.renderedContent;
+                                
+                                // 初始化代码高亮
+                                summaryContent.querySelectorAll('pre code').forEach((block) => {
+                                    hljs.highlightElement(block);
+                                });
+                                
+                                // 添加代码块复制按钮
+                                summaryContent.querySelectorAll('pre').forEach((block) => {
+                                    if (!block.querySelector('.copy-btn')) {
+                                        const button = document.createElement('button');
+                                        button.className = 'copy-btn btn btn-sm btn-outline-secondary';
+                                        button.textContent = '复制';
+                                        button.style.position = 'absolute';
+                                        button.style.top = '5px';
+                                        button.style.right = '5px';
+                                        button.style.opacity = '0.7';
+                                        
+                                        block.style.position = 'relative';
+                                        
+                                        button.addEventListener('click', () => {
+                                            const code = block.querySelector('code')?.textContent || block.textContent;
+                                            navigator.clipboard.writeText(code).then(() => {
+                                                button.textContent = '已复制!';
+                                                setTimeout(() => {
+                                                    button.textContent = '复制';
+                                                }, 2000);
+                                            });
+                                        });
+                                        
+                                        block.appendChild(button);
+                                    }
+                                });
+                            }
+                        }
+                    } else {
+                        // 普通文本内容，追加到当前文件内容
+                        currentFileContent += chunk;
+                        
+                        // 更新显示的内容
+                        const summaryContent = document.getElementById(`summary-content-${currentFileIdx}`);
+                        if (summaryContent) {
+                            // 使用textContent直接显示原始文本
+                            summaryContent.textContent = currentFileContent;
+                            
+                            // 确保滚动到可见区域
+                            const fileCard = document.getElementById(`file-result-${currentFileIdx}`);
+                            if (fileCard) {
+                                fileCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            }
+                            // 自动滚动到底部
+                            if (summaryContent.scrollHeight > summaryContent.clientHeight) {
+                                summaryContent.scrollTop = summaryContent.scrollHeight;
+                            }
+                        }
+                    }
+                }
+
                 // 清空文件列表
                 selectedFiles = [];
                 filePreviewArea.innerHTML = '';
-                submitBtn.disabled = true;
-
-                // 显示处理结果
-                const chatBody = document.getElementById('chatBody');
-                let resultHtml = '<div class="markdown-body">';
-
-                // 处理每个文件的结果
-                result.results.forEach(fileResult => {
-                    // 创建一个安全的文件名显示
-                    const safeFilename = document.createElement('div');
-                    safeFilename.textContent = fileResult.filename;
-                    
-                    let summaryContent = '';
-                    if (fileResult.success) {
-                        // 保存原始内容
-                        const originalSummary = fileResult.summary || '';
-                        
-                        // 尝试使用markdown处理函数
-                        try {
-                            const processed = processMarkdown(originalSummary);
-                            
-                            // 直接显示渲染后的内容，不显示原始视图切换按钮和关键词
-                            summaryContent = `
-                                <div class="content-container">
-                                    <div class="summary-content rendered-view" 
-                                         data-processed="true"
-                                         data-original-content="${escapeHtml(originalSummary)}">
-                                        ${processed.renderedContent}
-                                    </div>
-                                </div>
-                            `;
-                        } catch (error) {
-                            console.error("处理摘要内容时出错:", error);
-                            // 出错时直接显示原始内容
-                            summaryContent = `
-                                <div class="alert alert-warning mb-3">
-                                    <i class="bi bi-exclamation-triangle me-2"></i>
-                                    内容渲染时遇到问题，显示原始格式
-                                </div>
-                                <pre class="p-3 bg-light rounded" style="white-space: pre-wrap; word-break: break-word;">${escapeHtml(originalSummary)}</pre>
-                            `;
-                        }
-                    } else {
-                        summaryContent = `<div class="alert alert-danger">${fileResult.error}</div>`;
-                    }
-                    
-                    resultHtml += `
-                        <div class="card mb-4">
-                            <div class="card-header">
-                                <h5 class="mb-0">
-                                    <i class="bi ${getFileIcon(fileResult.filename)}"></i>
-                                    ${safeFilename.textContent}
-                                </h5>
-                            </div>
-                            <div class="card-body">
-                                ${summaryContent}
-                            </div>
-                        </div>
-                    `;
-                });
-
-                resultHtml += '</div>';
-                chatBody.innerHTML = resultHtml;
-
-                // 初始化所有代码块的高亮显示
-                document.querySelectorAll('pre code').forEach((block) => {
-                    hljs.highlightElement(block);
-                });
-
-                // 添加复制按钮到代码块
-                document.querySelectorAll('pre').forEach((block) => {
-                    if (!block.querySelector('.copy-btn')) {
-                        const button = document.createElement('button');
-                        button.className = 'copy-btn btn btn-sm btn-outline-secondary';
-                        button.textContent = '复制';
-                        button.style.position = 'absolute';
-                        button.style.top = '5px';
-                        button.style.right = '5px';
-                        button.style.opacity = '0.7';
-                        
-                        block.style.position = 'relative';
-                        
-                        button.addEventListener('click', () => {
-                            const code = block.querySelector('code')?.textContent || block.textContent;
-                            navigator.clipboard.writeText(code).then(() => {
-                                button.textContent = '已复制!';
-                                setTimeout(() => {
-                                    button.textContent = '复制';
-                                }, 2000);
-                            });
-                        });
-                        
-                        block.appendChild(button);
-                    }
-                });
-
+                
                 // 显示成功消息
                 const successMessage = `
                     <div class="alert alert-success alert-dismissible fade show mb-3" role="alert">
                         <i class="bi bi-check-circle me-2"></i>
-                        已完成 ${result.results.length} 个文件的处理
+                        已完成文件处理
                         <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                     </div>
                 `;
                 filePreviewArea.innerHTML = successMessage;
 
             } catch (error) {
+                console.error('处理文件时出错:', error);
                 showError(error.message || '处理文件时发生错误');
             } finally {
                 loadingSpinner.hidden = true;
@@ -1706,23 +1845,6 @@
             // 初始化已有的Markdown内容
             initializeMarkdownContent();
             
-            // 设置高级选项折叠按钮事件
-            const advancedOptionsBtn = document.getElementById('advancedOptionsBtn');
-            if (advancedOptionsBtn) {
-                const advancedOptions = document.getElementById('advancedOptions');
-                const chevronIcon = advancedOptionsBtn.querySelector('.bi');
-                
-                advancedOptionsBtn.addEventListener('click', function() {
-                    if (advancedOptions.classList.contains('show')) {
-                        chevronIcon.classList.remove('bi-chevron-up');
-                        chevronIcon.classList.add('bi-chevron-down');
-                    } else {
-                        chevronIcon.classList.remove('bi-chevron-down');
-                        chevronIcon.classList.add('bi-chevron-up');
-                    }
-                });
-            }
-            
             // 强制修复可能的内容截断问题
             function forceFixContentDisplay() {
                 console.log("强制修复内容显示问题...");
@@ -1762,6 +1884,44 @@
                 setTimeout(forceFixContentDisplay, 300);
             });
         });
+        
+        // 切换高级选项面板
+        function toggleAdvancedOptions() {
+            // 获取需要的元素
+            const advancedOptions = document.getElementById('advancedOptions');
+            const icon = document.getElementById('advancedOptionsIcon');
+            
+            try {
+                // 检查面板是否显示
+                const isVisible = advancedOptions.classList.contains('show');
+                
+                console.log('切换高级选项面板', isVisible ? '收起' : '展开');
+                
+                // 根据当前状态切换图标和面板
+                if (isVisible) {
+                    // 收起面板
+                    bootstrap.Collapse.getInstance(advancedOptions).hide();
+                    icon.className = 'bi bi-chevron-down ms-2';
+                } else {
+                    // 展开面板
+                    new bootstrap.Collapse(advancedOptions).show();
+                    icon.className = 'bi bi-chevron-up ms-2';
+                }
+            } catch (error) {
+                // 出错时使用直接控制元素类名的方式
+                console.error('使用Bootstrap Collapse出错:', error);
+                
+                const isVisible = advancedOptions.classList.contains('show');
+                
+                if (isVisible) {
+                    advancedOptions.classList.remove('show');
+                    icon.className = 'bi bi-chevron-down ms-2';
+                } else {
+                    advancedOptions.classList.add('show');
+                    icon.className = 'bi bi-chevron-up ms-2';
+                }
+            }
+        }
     </script>
 </body>
 </html>

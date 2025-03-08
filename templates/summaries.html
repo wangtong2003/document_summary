@@ -352,6 +352,91 @@
             border-color: #4A90E2;
             box-shadow: 0 0 0 0.2rem rgba(74, 144, 226, 0.25);
         }
+
+        /* 主题分析模态框样式 */
+        .bg-gradient-primary {
+            background: linear-gradient(135deg, #4A90E2 0%, #5470C6 100%);
+        }
+        
+        .topic-analysis-container {
+            display: flex;
+            min-height: 600px;
+        }
+        
+        .topic-analysis-sidebar {
+            width: 320px;
+            background-color: #f8f9fa;
+            border-right: 1px solid rgba(0,0,0,0.05);
+        }
+        
+        .topic-analysis-content {
+            flex: 1;
+            background-color: #fff;
+        }
+        
+        .sidebar-heading {
+            color: #4A90E2;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .topic-chart-canvas {
+            height: 380px;
+            margin: 0 auto;
+        }
+        
+        .topic-card {
+            border-radius: 10px;
+            border: 1px solid rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+            margin-bottom: 12px;
+        }
+        
+        .topic-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+            border-color: rgba(74, 144, 226, 0.3);
+        }
+        
+        .topic-card.active {
+            border-left: 4px solid #4A90E2;
+            background-color: rgba(74, 144, 226, 0.05);
+        }
+        
+        .topic-progress {
+            height: 6px;
+            border-radius: 3px;
+        }
+        
+        .topic-badge {
+            font-size: 0.7rem;
+            padding: 3px 8px;
+            border-radius: 12px;
+            background-color: rgba(74, 144, 226, 0.1);
+            color: #4A90E2;
+        }
+        
+        .insights-heading {
+            font-size: 0.9rem;
+        }
+        
+        .insights-text {
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+        
+        @media (max-width: 768px) {
+            .topic-analysis-container {
+                flex-direction: column;
+            }
+            
+            .topic-analysis-sidebar {
+                width: 100%;
+                border-right: none;
+                border-bottom: 1px solid rgba(0,0,0,0.05);
+            }
+        }
     </style>
 </head>
 <body>
@@ -384,7 +469,9 @@
             <h2 class="mb-0">我的文档摘要库</h2>
             <div class="d-flex gap-2">
                 <div class="input-group">
-                    <input type="text" class="form-control" id="searchInput" placeholder="输入关键词进行智能检索...">
+                    <input type="text" class="form-control" id="searchInput" 
+                           placeholder="输入关键词进行智能检索..."
+                           onkeypress="if(event.key === 'Enter') performSearch(this.value.trim())">
                     <button class="btn btn-primary" type="button" id="searchButton">
                         <i class="bi bi-search"></i> 智能检索
                     </button>
@@ -425,22 +512,45 @@
     <!-- 主题分析模态框 -->
     <div class="modal fade" id="topicAnalysisModal" tabindex="-1" aria-labelledby="topicAnalysisModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="topicAnalysisModalLabel">文档主题分析</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header bg-gradient-primary text-white border-0">
+                    <h5 class="modal-title" id="topicAnalysisModalLabel">
+                        <i class="bi bi-pie-chart me-2"></i>文档主题分析
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body">
-                    <div class="row">
-                        <div class="col-md-6">
-                            <!-- 主题分布饼图 -->
-                            <div id="topicPieChart" style="height: 400px;"></div>
-                        </div>
-                        <div class="col-md-6">
-                            <!-- 主题详情列表 -->
-                            <div id="topicDetails" class="mt-3">
-                                <h6>主题详情：</h6>
+                <div class="modal-body p-0">
+                    <div class="topic-analysis-container">
+                        <div class="topic-analysis-sidebar">
+                            <div class="p-4">
+                                <h6 class="sidebar-heading mb-3 d-flex align-items-center">
+                                    <i class="bi bi-list-ul me-2"></i>主题详情
+                                </h6>
                                 <div class="topic-list"></div>
+                            </div>
+                        </div>
+                        <div class="topic-analysis-content p-4">
+                            <div class="chart-header mb-3 d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0 fw-bold text-primary">主题分布</h6>
+                                <div class="chart-controls">
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button type="button" class="btn btn-outline-secondary active" id="viewAsPie">
+                                            <i class="bi bi-pie-chart"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary" id="viewAsBar">
+                                            <i class="bi bi-bar-chart"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="topicPieChart" class="topic-chart-canvas"></div>
+                            <div class="chart-footer mt-4">
+                                <div class="insights-panel border-top pt-3 mt-2" style="display: none;">
+                                    <h6 class="insights-heading text-primary mb-2">
+                                        <i class="bi bi-lightbulb me-2"></i>主题洞察
+                                    </h6>
+                                    <p class="insights-text text-muted" id="topicInsights">加载中...</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -582,31 +692,30 @@
                                         <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${summary.id}, '${encodeURIComponent(summary.file_name)}'); event.stopPropagation();">
                                             <i class="bi bi-file-earmark-text"></i> 预览原文
                                         </button>
-                                        <button class="btn btn-outline-info btn-sm me-2" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
+                                        <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
                                             <i class="bi bi-download"></i> 下载原文
                                         </button>
-                                        <button class="btn btn-outline-secondary btn-sm btn-analyze" onclick="toggleTopicAnalysis(this, ${summary.id}); event.stopPropagation();">
-                                            <i class="bi bi-graph-up"></i> 主题分析
+                                        <button class="btn btn-outline-secondary btn-sm mt-2" onclick="showTopicAnalysis(${summary.id}); event.stopPropagation();">
+                                            <i class="bi bi-pie-chart"></i> 主题分析
                                         </button>
                                     </div>
-                                    <div class="topic-chart-container mt-4" style="display: none;">
-                                        <div class="topic-analysis-header">
-                                            <h6>主题分布分析</h6>
-                                            <button type="button" class="close-btn" onclick="toggleTopicAnalysis(this.closest('.card').querySelector('.btn-analyze'), ${summary.id})">
-                                                <i class="bi bi-x-lg"></i>
-                                            </button>
-                                        </div>
-                                        <div class="loading-indicator" style="display: none;">
-                                            <div class="spinner-border text-primary spinner" role="status">
-                                                <span class="visually-hidden">加载中...</span>
+                                    ${summary.topic_analysis ? `
+                                        <div class="topic-chart-container mt-4">
+                                            <h6 class="mb-3">主题分布分析</h6>
+                                            <canvas class="topic-chart" height="200"></canvas>
+                                            <div class="topic-keywords mt-3">
+                                                ${Array.isArray(summary.topic_analysis.topic_keywords) ? 
+                                                    summary.topic_analysis.topic_keywords.map((words, idx) => `
+                                                    <div class="mb-2">
+                                                        <strong>主题${idx + 1}:</strong>
+                                                        ${Array.isArray(words) ? 
+                                                            words.map(word => `<span class="topic-keyword">${word}</span>`).join('') 
+                                                            : ''}
+                                                    </div>
+                                                `).join('') : ''}
                                             </div>
-                                            <p class="text-muted">正在分析文档主题...</p>
                                         </div>
-                                        <div class="topic-chart-wrapper">
-                                            <canvas class="topic-chart"></canvas>
-                                        </div>
-                                        <div class="topic-keywords"></div>
-                                    </div>
+                                    ` : ''}
                                 </div>
                             </div>
                         </div>
@@ -772,7 +881,18 @@ ${summary.summary_text || '无摘要内容'}
 
         // 更新搜索功能
         async function performSearch(query) {
+            if (!query) {
+                alert('请输入搜索关键词');
+                return;
+            }
+
             try {
+                // 显示加载状态
+                const searchButton = document.getElementById('searchButton');
+                const originalButtonHtml = searchButton.innerHTML;
+                searchButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 搜索中...';
+                searchButton.disabled = true;
+
                 console.log('执行智能检索:', query);
                 const response = await fetch('/api/search', {
                     method: 'POST',
@@ -782,13 +902,30 @@ ${summary.summary_text || '无摘要内容'}
                     body: JSON.stringify({ query })
                 });
 
+                // 控制台输出完整原始响应用于调试
+                console.log('搜索原始响应:', response);
+                
+                // 确保响应成功解析为JSON
+                let data;
+                try {
+                    data = await response.json();
+                    console.log('搜索结果JSON:', data);
+                } catch (jsonError) {
+                    console.error('解析JSON失败:', jsonError);
+                    throw new Error('无法解析服务器响应');
+                }
+                
                 if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || '搜索失败');
+                    throw new Error(data.error || '搜索失败');
                 }
 
-                const data = await response.json();
-                console.log('搜索结果:', data);
+                if (!data.success) {
+                    throw new Error(data.error || '搜索失败');
+                }
+
+                // 确保data.results始终是数组
+                const results = Array.isArray(data.results) ? data.results : [];
+                console.log('处理后的搜索结果:', results);
 
                 const container = document.getElementById('summariesContainer');
                 
@@ -800,52 +937,83 @@ ${summary.summary_text || '无摘要内容'}
                                 <i class="bi bi-arrow-left"></i> 返回完整列表
                             </button>
                             <span class="text-muted">
-                                搜索 "${query}" 的结果 (${data.results ? data.results.length : 0} 条)
+                                搜索 "${query}" 的结果 (${results.length} 条)
                             </span>
                         </div>
                     </div>
                 `;
                 
-                if (!data.results || data.results.length === 0) {
+                if (results.length === 0) {
                     container.innerHTML = headerHtml + `
                         <div class="col-12 text-center py-5">
                             <i class="bi bi-search" style="font-size: 3rem; color: #dee2e6;"></i>
                             <h4 class="mt-3">未找到相关结果</h4>
                             <p class="text-muted">尝试使用其他关键词搜索</p>
+                            ${data.message ? `<p class="text-info">${data.message}</p>` : ''}
                         </div>
                     `;
                     return;
                 }
                 
-                const resultsHtml = data.results.map(summary => `
+                const resultsHtml = results.map(summary => {
+                    // 防止summary为undefined或null
+                    if (!summary) {
+                        console.error('发现无效的摘要项:', summary);
+                        return '';
+                    }
+                    
+                    // 确保必要的属性存在，使用默认值代替可能缺失的属性
+                    const safeId = summary.id || 0;
+                    const safeFileName = summary.file_name || '未知文件';
+                    const safeScore = summary.score !== undefined ? summary.score : 0;
+                    
+                    // 处理关键字
+                    let keywordsHtml = '';
+                    try {
+                        if (summary.keywords) {
+                            const keywordArray = Array.isArray(summary.keywords) 
+                                ? summary.keywords 
+                                : typeof summary.keywords === 'string'
+                                    ? summary.keywords.split('|')
+                                    : [];
+                                    
+                            keywordsHtml = keywordArray
+                                .filter(keyword => keyword && keyword.trim())
+                                .map(keyword => `<span class="badge">${keyword.trim()}</span>`)
+                                .join('');
+                        }
+                    } catch (keywordError) {
+                        console.error('处理关键字出错:', keywordError);
+                        keywordsHtml = '';
+                    }
+                    
+                    // 处理文件图标
+                    const fileExt = safeFileName.split('.').pop() || '';
+                    const fileIcon = getFileIcon(fileExt);
+                    
+                    return `
                     <div class="col-md-4 mb-4">
                         <div class="card summary-card h-100">
                             <button class="btn btn-outline-danger btn-sm delete-btn" 
-                                    onclick="deleteSummary(${summary.id}); event.stopPropagation();"
+                                    onclick="deleteSummary(${safeId}); event.stopPropagation();"
                                     title="删除摘要">
                                 <i class="bi bi-trash"></i>
                             </button>
                             <div class="card-body text-center">
-                                <i class="bi ${getFileIcon(summary.file_name.split('.').pop())} file-icon"></i>
-                                ${summary.score !== undefined ? `
+                                <i class="bi ${fileIcon} file-icon"></i>
+                                ${safeScore !== undefined ? `
                                     <div class="relevance-score">
-                                        相关度: ${(summary.score / 8 * 100).toFixed(1)}%
+                                        相关度: ${(safeScore * 100).toFixed(1)}%
                                     </div>
                                 ` : ''}
-                                <h5 class="card-title text-truncate" title="${summary.file_name}">
-                                    ${summary.file_name}
+                                <h5 class="card-title text-truncate" title="${safeFileName}">
+                                    ${safeFileName}
                                 </h5>
                                 <div class="keywords-container mb-2">
-                                    ${summary.keywords ? (Array.isArray(summary.keywords) 
-                                        ? summary.keywords.map(keyword => 
-                                            `<span class="badge">${keyword.trim()}</span>`
-                                        ).join('')
-                                        : summary.keywords.split('|').map(keyword => 
-                                            `<span class="badge">${keyword.trim()}</span>`
-                                        ).join('')) : ''}
+                                    ${keywordsHtml}
                                 </div>
                                 <div class="summary-preview mb-3">
-                                    ${summary.summary_text}
+                                    ${summary.summary_text || '无摘要内容'}
                                 </div>
                                 <div class="text-muted">
                                     <small class="me-2">
@@ -859,39 +1027,51 @@ ${summary.summary_text || '无摘要内容'}
                                     </small>
                                 </div>
                                 <div class="mt-3">
-                                    <button class="btn btn-outline-primary btn-sm me-2" onclick="showSummaryDetail(${summary.id}); event.stopPropagation();">
+                                    <button class="btn btn-outline-primary btn-sm me-2" onclick="showSummaryDetail(${safeId}); event.stopPropagation();">
                                         <i class="bi bi-eye"></i> 查看摘要
                                     </button>
-                                    <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${summary.id}, '${encodeURIComponent(summary.file_name)}'); event.stopPropagation();">
+                                    <button class="btn btn-outline-success btn-sm me-2" onclick="previewOriginal(${safeId}, '${encodeURIComponent(safeFileName)}'); event.stopPropagation();">
                                         <i class="bi bi-file-earmark-text"></i> 预览原文
                                     </button>
-                                    <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${summary.id}); event.stopPropagation();">
+                                    <button class="btn btn-outline-info btn-sm" onclick="downloadDocument(${safeId}); event.stopPropagation();">
                                         <i class="bi bi-download"></i> 下载原文
                                     </button>
+                                    <button class="btn btn-outline-secondary btn-sm mt-2" onclick="showTopicAnalysis(${safeId}); event.stopPropagation();">
+                                        <i class="bi bi-pie-chart"></i> 主题分析
+                                    </button>
                                 </div>
-                                ${summary.topic_analysis && summary.topic_analysis.success ? `
+                                ${summary.topic_analysis ? `
                                     <div class="topic-chart-container mt-4">
                                         <h6 class="mb-3">主题分布分析</h6>
                                         <canvas class="topic-chart" height="200"></canvas>
                                         <div class="topic-keywords mt-3">
-                                            ${summary.topic_analysis.topic_keywords.map((words, idx) => `
+                                            ${Array.isArray(summary.topic_analysis.topic_keywords) ? 
+                                                summary.topic_analysis.topic_keywords.map((words, idx) => `
                                                 <div class="mb-2">
                                                     <strong>主题${idx + 1}:</strong>
-                                                    ${words.map(word => `<span class="topic-keyword">${word}</span>`).join('')}
+                                                    ${Array.isArray(words) ? 
+                                                        words.map(word => `<span class="topic-keyword">${word}</span>`).join('') 
+                                                        : ''}
                                                 </div>
-                                            `).join('')}
+                                            `).join('') : ''}
                                         </div>
                                     </div>
                                 ` : ''}
                             </div>
                         </div>
                     </div>
-                `).join('');
+                    `;
+                }).join('');
 
                 container.innerHTML = headerHtml + resultsHtml;
             } catch (error) {
                 console.error('搜索错误:', error);
                 alert(error.message || '搜索过程中发生错误');
+            } finally {
+                // 恢复按钮状态
+                const searchButton = document.getElementById('searchButton');
+                searchButton.innerHTML = '<i class="bi bi-search"></i> 智能检索';
+                searchButton.disabled = false;
             }
         }
 
@@ -903,6 +1083,7 @@ ${summary.summary_text || '无摘要内容'}
             }
         });
 
+        // 绑定回车键事件
         document.getElementById('searchInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 const query = this.value.trim();
@@ -1094,7 +1275,7 @@ ${summary.summary_text || '无摘要内容'}
                             tooltip: {
                                 enabled: true,
                                 position: 'nearest',
-                                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                                backgroundColor: 'rgba(255, 255, 255, 0.9)',
                                 titleColor: '#1a1a1a',
                                 bodyColor: '#1a1a1a',
                                 borderColor: '#e9ecef',
@@ -1199,123 +1380,485 @@ ${summary.summary_text || '无摘要内容'}
         let topicChart = null;
 
         function showTopicAnalysis(summaryId) {
-            // 显示加载中的模态框
-            const modal = new bootstrap.Modal(document.getElementById('topicAnalysisModal'));
-            modal.show();
+            console.log('%c === 开始主题分析流程 === ', 'background: #34495e; color: white; padding: 4px;');
+            console.log('摘要ID:', summaryId);
             
-            // 初始化图表
-            if (!topicChart) {
-                topicChart = echarts.init(document.getElementById('topicPieChart'));
-            }
-            
-            // 显示加载动画
-            topicChart.showLoading();
-            
-            // 调用主题分析API
-            fetch(`/analyze_topics/${summaryId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success && data.topics) {
-                        // 准备饼图数据
-                        const pieData = data.topics.map(topic => {
-                            // 确保权重是数字类型
-                            let weight = topic.weight;
-                            if (typeof weight === 'string') {
-                                weight = parseFloat(weight.replace('%', '')) || 0;
-                            }
-                            
-                            // 安全处理可能包含花括号的标题
-                            const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : '未命名主题';
-                            
-                            return {
-                                name: safeTitle,
-                                value: weight
-                            };
-                        });
+            try {
+                // 获取模态框元素
+                const modalElement = document.getElementById('topicAnalysisModal');
+                console.log('模态框元素:', modalElement);
+                
+                if (!modalElement) {
+                    console.error('找不到模态框元素 #topicAnalysisModal');
+                    return;
+                }
+                
+                // 确保先销毁现有图表
+                if (topicChart) {
+                    console.log('销毁现有图表实例');
+                    topicChart.dispose();
+                    topicChart = null;
+                }
+                
+                // 创建新的模态框实例
+                console.log('创建Bootstrap模态框实例');
+                const modal = new bootstrap.Modal(modalElement);
+                
+                // 绑定事件处理函数
+                const handleModalShown = function(event) {
+                    console.log('%c 模态框显示完成事件触发 shown.bs.modal', 'background: #2ecc71; color: white; padding: 4px;');
+                    console.log('事件对象:', event);
+                    
+                    // 移除事件监听器，避免重复触发
+                    modalElement.removeEventListener('shown.bs.modal', handleModalShown);
+                    
+                    // 获取图表容器
+                    const chartContainer = document.getElementById('topicPieChart');
+                    console.log('图表容器元素:', chartContainer);
+                    
+                    if (!chartContainer) {
+                        console.error('找不到图表容器元素 #topicPieChart');
+                        return;
+                    }
+                    
+                    // 设置加载状态
+                    document.querySelector('.topic-list').innerHTML = `
+                        <div class="d-flex justify-content-center align-items-center" style="height: 200px;">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">加载中...</span>
+                            </div>
+                        </div>
+                    `;
+                    
+                    document.getElementById('topicInsights').innerHTML = '加载中...';
+                    
+                    // 初始化ECharts实例
+                    try {
+                        console.log('%c 初始化ECharts实例', 'background: #3498db; color: white; padding: 4px;');
                         
-                        // 配置饼图选项
-                        const option = {
-                            title: {
-                                text: '主题分布',
-                                left: 'center'
-                            },
+                        setTimeout(() => {
+                            topicChart = echarts.init(chartContainer);
+                            console.log('ECharts实例创建成功:', topicChart);
+                            
+                            // 显示加载动画
+                            topicChart.showLoading({
+                                text: '正在分析文档主题...',
+                                color: '#4A90E2',
+                                textColor: '#666',
+                                maskColor: 'rgba(255, 255, 255, 0.8)',
+                                fontSize: 14,
+                                showSpinner: true,
+                                spinnerRadius: 6,
+                            });
+                            
+                            // 初始化图表类型切换
+                            let currentChartType = 'pie';
+                            
+                            document.getElementById('viewAsPie').addEventListener('click', function() {
+                                if (currentChartType !== 'pie' && topicChartData) {
+                                    currentChartType = 'pie';
+                                    this.classList.add('active');
+                                    document.getElementById('viewAsBar').classList.remove('active');
+                                    renderChart(topicChartData, 'pie');
+                                }
+                            });
+                            
+                            document.getElementById('viewAsBar').addEventListener('click', function() {
+                                if (currentChartType !== 'bar' && topicChartData) {
+                                    currentChartType = 'bar';
+                                    this.classList.add('active');
+                                    document.getElementById('viewAsPie').classList.remove('active');
+                                    renderChart(topicChartData, 'bar');
+                                }
+                            });
+                            
+                            // 存储图表数据以便于切换视图
+                            let topicChartData = null;
+                            
+                            // 调用主题分析API
+                            console.log('开始调用主题分析API');
+                            fetch(`/analyze_topics/${summaryId}`)
+                                .then(response => {
+                                    console.log('收到API响应:', response);
+                                    return response.json();
+                                })
+                                .then(data => {
+                                    console.log('%c 解析API数据:', 'background: #9b59b6; color: white; padding: 4px;', data);
+                                    
+                                    if (topicChart) {
+                                        topicChart.hideLoading();
+                                    } else {
+                                        console.error('图表实例不存在，无法隐藏加载动画');
+                                        return;
+                                    }
+                                    
+                                    if (!data) {
+                                        console.error('API返回数据为空');
+                                        return;
+                                    }
+                                    
+                                    if (data.success && data.topics) {
+                                        // 保存图表数据以便于切换视图
+                                        topicChartData = data;
+                                        
+                                        // 渲染图表
+                                        renderChart(data, currentChartType);
+                                        
+                                        // 更新主题详情列表
+                                        renderTopicList(data.topics);
+                                        
+                                        // 生成主题洞察已禁用
+                                        generateTopicInsights(data.topics);
+                                    } else {
+                                        // 显示错误信息
+                                        const topicList = document.querySelector('.topic-list');
+                                        if (topicList) {
+                                            topicList.innerHTML = `
+                                                <div class="alert alert-danger">
+                                                    ${data.error || '主题分析失败'}
+                                                </div>
+                                            `;
+                                        }
+                                        
+                                        document.getElementById('topicInsights').innerHTML = '无法生成主题洞察，分析数据不完整。';
+                                        
+                                        console.error('主题分析数据无效:', data);
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error('主题分析请求错误:', error);
+                                    const topicList = document.querySelector('.topic-list');
+                                    if (topicList) {
+                                        topicList.innerHTML = `
+                                            <div class="alert alert-danger">
+                                                主题分析请求失败：${error.message}
+                                            </div>
+                                        `;
+                                    }
+                                    
+                                    document.getElementById('topicInsights').innerHTML = '获取主题数据失败，请稍后重试。';
+                                    
+                                    if (topicChart) {
+                                        topicChart.hideLoading();
+                                    }
+                                });
+                        }, 100);
+                    } catch (error) {
+                        console.error('初始化图表失败:', error);
+                        const topicList = document.querySelector('.topic-list');
+                        if (topicList) {
+                            topicList.innerHTML = `
+                                <div class="alert alert-danger">
+                                    初始化图表失败：${error.message}
+                                </div>
+                            `;
+                        }
+                        
+                        document.getElementById('topicInsights').innerHTML = '图表初始化失败，请刷新页面重试。';
+                    }
+                };
+                
+                // 渲染图表函数
+                function renderChart(data, type = 'pie') {
+                    if (!topicChart) return;
+                    
+                    const topics = data.topics;
+                    
+                    // 准备数据
+                    const chartData = topics.map(topic => {
+                        // 确保权重是数字类型
+                        let weight = topic.weight;
+                        if (typeof weight === 'string') {
+                            weight = parseFloat(weight.replace('%', '')) || 0;
+                        }
+                        
+                        // 安全处理可能包含花括号的标题
+                        const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : '未命名主题';
+                        
+                        return {
+                            name: safeTitle,
+                            value: weight
+                        };
+                    });
+                    
+                    console.log('生成的图表数据:', chartData);
+                    
+                    // 颜色方案
+                    const colors = [
+                        '#5470c6', '#91cc75', '#fac858', '#ee6666', 
+                        '#73c0de', '#3ba272', '#fc8452', '#9a60b4'
+                    ];
+                    
+                    let option;
+                    
+                    if (type === 'pie') {
+                        option = {
+                            color: colors,
                             tooltip: {
                                 trigger: 'item',
-                                formatter: '{b}: {c}%'
+                                formatter: '{b}: {c}% ({d}%)',
+                                backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                                borderColor: '#eee',
+                                borderWidth: 1,
+                                textStyle: {
+                                    color: '#333'
+                                },
+                                extraCssText: 'box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);'
                             },
                             legend: {
-                                orient: 'vertical',
-                                left: 'left'
+                                orient: 'horizontal',
+                                bottom: 0,
+                                type: 'scroll',
+                                pageIconColor: '#4A90E2',
+                                pageTextStyle: {
+                                    color: '#4A90E2'
+                                },
+                                textStyle: {
+                                    color: '#666'
+                                }
                             },
                             series: [{
                                 name: '主题占比',
                                 type: 'pie',
-                                radius: '50%',
-                                data: pieData,
+                                radius: ['40%', '70%'],
+                                center: ['50%', '45%'],
+                                avoidLabelOverlap: true,
+                                itemStyle: {
+                                    borderRadius: 4,
+                                    borderColor: '#fff',
+                                    borderWidth: 2
+                                },
+                                label: {
+                                    show: true,
+                                    position: 'outside',
+                                    formatter: '{b}: {c}%',
+                                    fontSize: 12,
+                                    color: '#666'
+                                },
                                 emphasis: {
+                                    label: {
+                                        show: true,
+                                        fontSize: 14,
+                                        fontWeight: 'bold'
+                                    },
                                     itemStyle: {
                                         shadowBlur: 10,
                                         shadowOffsetX: 0,
                                         shadowColor: 'rgba(0, 0, 0, 0.5)'
                                     }
-                                }
+                                },
+                                labelLine: {
+                                    show: true,
+                                    length: 15,
+                                    length2: 10,
+                                    smooth: true
+                                },
+                                data: chartData,
+                                animationType: 'scale',
+                                animationEasing: 'elasticOut',
+                                animationDuration: 1000
                             }]
                         };
-                        
-                        // 设置图表选项
-                        topicChart.setOption(option);
-                        
-                        // 更新主题详情列表
-                        const topicList = document.querySelector('#topicDetails .topic-list');
-                        topicList.innerHTML = data.topics.map(topic => {
-                            // 确保权重是数字类型
-                            let weight = topic.weight;
-                            if (typeof weight === 'string') {
-                                weight = parseFloat(weight.replace('%', '')) || 0;
-                            }
-                            
-                            // 安全处理可能包含花括号的文本
-                            const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : '未命名主题';
-                            const safeDescription = topic.description ? topic.description.replace(/[{}]/g, '') : '';
-                            
-                            // 安全处理关键词
-                            const safeKeywords = topic.keywords.map(word => 
-                                typeof word === 'string' ? word.replace(/[{}]/g, '') : word
-                            ).join('、');
-                            
-                            return `
-                                <div class="card mb-3">
-                                    <div class="card-body">
-                                        <h6 class="card-title">${safeTitle} (${weight.toFixed(1)}%)</h6>
-                                        <p class="card-text">
-                                            <strong>关键词：</strong> ${safeKeywords}<br>
-                                            <strong>描述：</strong> ${safeDescription}
-                                        </p>
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
                     } else {
-                        // 显示错误信息
-                        document.querySelector('#topicDetails').innerHTML = `
-                            <div class="alert alert-danger">
-                                ${data.error || '主题分析失败'}
+                        // 柱状图配置
+                        option = {
+                            color: colors,
+                            tooltip: {
+                                trigger: 'axis',
+                                axisPointer: {
+                                    type: 'shadow'
+                                },
+                                backgroundColor: 'rgba(255, 255, 255, 0.9)',
+                                borderColor: '#eee',
+                                borderWidth: 1,
+                                textStyle: {
+                                    color: '#333'
+                                },
+                                extraCssText: 'box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);'
+                            },
+                            grid: {
+                                left: '3%',
+                                right: '4%',
+                                bottom: '10%',
+                                top: '3%',
+                                containLabel: true
+                            },
+                            xAxis: {
+                                type: 'category',
+                                data: chartData.map(item => item.name),
+                                axisLine: {
+                                    lineStyle: {
+                                        color: '#E0E0E0'
+                                    }
+                                },
+                                axisLabel: {
+                                    color: '#666',
+                                    interval: 0,
+                                    rotate: chartData.length > 4 ? 30 : 0,
+                                    formatter: function(value) {
+                                        if (value.length > 10) {
+                                            return value.substring(0, 10) + '...';
+                                        }
+                                        return value;
+                                    }
+                                }
+                            },
+                            yAxis: {
+                                type: 'value',
+                                name: '占比 (%)',
+                                nameTextStyle: {
+                                    color: '#666'
+                                },
+                                axisLine: {
+                                    show: true,
+                                    lineStyle: {
+                                        color: '#E0E0E0'
+                                    }
+                                },
+                                axisLabel: {
+                                    color: '#666',
+                                    formatter: '{value}%'
+                                },
+                                splitLine: {
+                                    lineStyle: {
+                                        color: '#EFEFEF'
+                                    }
+                                }
+                            },
+                            series: [{
+                                name: '主题占比',
+                                type: 'bar',
+                                barWidth: '60%',
+                                data: chartData.map(item => item.value),
+                                itemStyle: {
+                                    borderRadius: [4, 4, 0, 0]
+                                },
+                                label: {
+                                    show: true,
+                                    position: 'top',
+                                    formatter: '{c}%',
+                                    color: '#666'
+                                },
+                                emphasis: {
+                                    itemStyle: {
+                                        shadowBlur: 10,
+                                        shadowOffsetX: 0,
+                                        shadowColor: 'rgba(0, 0, 0, 0.2)'
+                                    }
+                                },
+                                animationDuration: 1000,
+                                animationEasing: 'elasticOut'
+                            }]
+                        };
+                    }
+                    
+                    // 设置图表选项
+                    topicChart.setOption(option);
+                    console.log('图表选项设置成功');
+                    
+                    // 手动触发一次resize以确保图表正确渲染
+                    console.log('触发resize确保图表渲染');
+                    topicChart.resize();
+                }
+                
+                // 渲染主题列表函数
+                function renderTopicList(topics) {
+                    const topicList = document.querySelector('.topic-list');
+                    if (!topicList) return;
+                    
+                    // 定义颜色数组 - 修复colors未定义的问题
+                    const colors = [
+                        '#5470c6', '#91cc75', '#fac858', '#ee6666', 
+                        '#73c0de', '#3ba272', '#fc8452', '#9a60b4'
+                    ];
+                    
+                    // 生成HTML
+                    topicList.innerHTML = topics.map((topic, index) => {
+                        // 确保权重是数字类型
+                        let weight = topic.weight;
+                        if (typeof weight === 'string') {
+                            weight = parseFloat(weight.replace('%', '')) || 0;
+                        }
+                        
+                        // 安全处理文本
+                        const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : '未命名主题';
+                        const safeDescription = topic.description ? topic.description.replace(/[{}]/g, '') : '';
+                        
+                        // 处理关键词
+                        const keywordBadges = topic.keywords.slice(0, 5).map(word => {
+                            const safeWord = typeof word === 'string' ? word.replace(/[{}]/g, '') : word;
+                            return `<span class="topic-badge me-1 mb-1 d-inline-block">${safeWord}</span>`;
+                        }).join('');
+                        
+                        // 确定主题颜色
+                        const color = colors[index % colors.length];
+                        
+                        return `
+                            <div class="topic-card p-3 ${index === 0 ? 'active' : ''}" data-topic-index="${index}">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="mb-0 fw-bold">${safeTitle}</h6>
+                                    <span class="fw-bold text-primary">${weight.toFixed(1)}%</span>
+                                </div>
+                                <div class="progress topic-progress mb-3">
+                                    <div class="progress-bar" role="progressbar" style="width: ${weight}%; background-color: ${color};" 
+                                        aria-valuenow="${weight}" aria-valuemin="0" aria-valuemax="100"></div>
+                                </div>
+                                <div class="topic-keywords mb-2">
+                                    ${keywordBadges}
+                                    ${topic.keywords.length > 5 ? `<span class="text-muted small">+${topic.keywords.length - 5}个</span>` : ''}
+                                </div>
+                                <p class="topic-description text-muted small mb-0">${safeDescription}</p>
                             </div>
                         `;
-                    }
-                })
-                .catch(error => {
-                    console.error('主题分析错误:', error);
-                    document.querySelector('#topicDetails').innerHTML = `
-                        <div class="alert alert-danger">
-                            主题分析请求失败：${error.message}
-                        </div>
-                    `;
-                })
-                .finally(() => {
-                    // 隐藏加载动画
-                    topicChart.hideLoading();
-                });
+                    }).join('');
+                    
+                    // 添加点击事件
+                    document.querySelectorAll('.topic-card').forEach(card => {
+                        card.addEventListener('click', function() {
+                            // 移除所有卡片的active类
+                            document.querySelectorAll('.topic-card').forEach(c => c.classList.remove('active'));
+                            // 为当前卡片添加active类
+                            this.classList.add('active');
+                            
+                            // 高亮相应的图表部分
+                            const topicIndex = this.getAttribute('data-topic-index');
+                            if (topicChart) {
+                                topicChart.dispatchAction({
+                                    type: 'highlight',
+                                    seriesIndex: 0,
+                                    dataIndex: topicIndex
+                                });
+                                
+                                // 短暂延迟后取消高亮，保持视觉上的统一
+                                setTimeout(() => {
+                                    topicChart.dispatchAction({
+                                        type: 'downplay',
+                                        seriesIndex: 0
+                                    });
+                                }, 1500);
+                            }
+                        });
+                    });
+                }
+                
+                // 生成主题洞察函数 - 保留为空函数，删除原有实现
+                function generateTopicInsights(topics) {
+                    // 功能已禁用，不执行任何操作
+                    return;
+                }
+                
+                // 添加事件监听器
+                console.log('添加模态框显示完成事件监听器');
+                modalElement.addEventListener('shown.bs.modal', handleModalShown);
+                
+                // 显示模态框
+                console.log('显示模态框');
+                modal.show();
+                console.log('模态框显示命令已执行');
+            } catch (error) {
+                console.error('主题分析整体流程出错:', error);
+                alert('显示主题分析时出错: ' + error.message);
+            }
         }
 
         // 监听窗口大小变化，调整图表大小

@@ -9,6 +9,7 @@ SET FOREIGN_KEY_CHECKS=0;
 -- 删除已存在的表
 DROP TABLE IF EXISTS file_chunks;
 DROP TABLE IF EXISTS file_mappings;
+DROP TABLE IF EXISTS summaries;
 DROP TABLE IF EXISTS document_summaries;
 DROP TABLE IF EXISTS users;
 
@@ -79,6 +80,26 @@ CREATE TABLE file_mappings (
     FOREIGN KEY (summary_id) REFERENCES document_summaries(id) ON DELETE CASCADE,
     INDEX idx_summary_id (summary_id),
     INDEX idx_system_filename (system_filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 创建文本摘要表
+CREATE TABLE summaries (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    original_text MEDIUMTEXT NOT NULL,
+    summary_text MEDIUMTEXT NOT NULL,
+    keywords VARCHAR(255),
+    model VARCHAR(100),
+    target_language VARCHAR(20),
+    target_length VARCHAR(20),
+    focus_areas VARCHAR(255),
+    level VARCHAR(20),
+    language_style VARCHAR(20),
+    style VARCHAR(20),
+    format VARCHAR(20),
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_timestamp (timestamp),
+    FULLTEXT INDEX ft_keywords (keywords),
+    FULLTEXT INDEX ft_summary (summary_text(512))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 创建搜索历史表

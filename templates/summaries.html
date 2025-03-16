@@ -1047,13 +1047,13 @@ ${summary.summary_text || '无摘要内容'}
                                         <div class="topic-keywords mt-3">
                                             ${Array.isArray(summary.topic_analysis.topic_keywords) ? 
                                                 summary.topic_analysis.topic_keywords.map((words, idx) => `
-                                                <div class="mb-2">
-                                                    <strong>主题${idx + 1}:</strong>
-                                                    ${Array.isArray(words) ? 
-                                                        words.map(word => `<span class="topic-keyword">${word}</span>`).join('') 
-                                                        : ''}
-                                                </div>
-                                            `).join('') : ''}
+                                            <div class="mb-2">
+                                                <strong>主题${idx + 1}:</strong>
+                                                ${Array.isArray(words) ? 
+                                                    words.map(word => `<span class="topic-keyword">${word}</span>`).join('') 
+                                                    : ''}
+                                            </div>
+                                        `).join('') : ''}
                                         </div>
                                     </div>
                                 ` : ''}
@@ -1222,149 +1222,33 @@ ${summary.summary_text || '无摘要内容'}
                 }
                 
                 const data = await response.json();
-                if (!data.success || !data.topics) {
-                    throw new Error(data.error || '主题分析数据格式错误');
+                if (!data || !data.topics || !Array.isArray(data.topics) || data.topics.length === 0) {
+                    console.error('API返回数据无效:', data);
+                    // 显示错误信息
+                    const topicList = document.querySelector('.topic-list');
+                    if (topicList) {
+                        topicList.innerHTML = `
+                            <div class="alert alert-danger">
+                                ${data && data.error ? data.error : '主题分析失败，未找到有效的主题数据'}
+                            </div>
+                        `;
+                    }
+                    
+                    document.getElementById('topicInsights').innerHTML = '无法生成主题洞察，分析数据不完整。';
+                    return;
                 }
                 
-                // 隐藏加载指示器
-                loadingIndicator.style.display = 'none';
+                // 保存图表数据以便于切换视图
+                topicChartData = data;
                 
-                // 定义主题颜色
-                const colors = [
-                    { bg: 'rgba(79, 129, 189, 0.2)', border: 'rgba(79, 129, 189, 1)' },
-                    { bg: 'rgba(192, 80, 77, 0.2)', border: 'rgba(192, 80, 77, 1)' },
-                    { bg: 'rgba(155, 187, 89, 0.2)', border: 'rgba(155, 187, 89, 1)' },
-                    { bg: 'rgba(128, 100, 162, 0.2)', border: 'rgba(128, 100, 162, 1)' }
-                ];
+                // 渲染图表
+                renderChart(data, currentChartType);
                 
-                // 准备图表数据
-                const topics = data.topics;
-                const labels = topics.map(topic => topic.title);
-                const values = topics.map(topic => {
-                    // 确保权重是数字类型
-                    let weight = topic.weight;
-                    if (typeof weight === 'string') {
-                        weight = parseFloat(weight.replace('%', '')) || 0;
-                    }
-                    return weight;
-                });
+                // 更新主题详情列表
+                renderTopicList(data.topics);
                 
-                // 创建新图表
-                const newChart = new Chart(chartCanvas, {
-                    type: 'bar',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            data: values,
-                            backgroundColor: colors.map(c => c.bg),
-                            borderColor: colors.map(c => c.border),
-                            borderWidth: 2,
-                            borderRadius: 4,
-                            maxBarThickness: 50
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        animation: {
-                            duration: 1000,
-                            easing: 'easeOutQuart'
-                        },
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                enabled: true,
-                                position: 'nearest',
-                                backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                                titleColor: '#1a1a1a',
-                                bodyColor: '#1a1a1a',
-                                borderColor: '#e9ecef',
-                                borderWidth: 1,
-                                padding: 10,
-                                cornerRadius: 8,
-                                displayColors: false,
-                                callbacks: {
-                                    title: function(items) {
-                                        return topics[items[0].dataIndex].title;
-                                    },
-                                    label: function(context) {
-                                        const topic = topics[context.dataIndex];
-                                        // 确保权重是数字类型
-                                        let weight = topic.weight;
-                                        if (typeof weight === 'string') {
-                                            weight = parseFloat(weight.replace('%', '')) || 0;
-                                        }
-                                        return [
-                                            `比重: ${weight.toFixed(1)}%`,
-                                            '关键词:',
-                                            ...topic.keywords.map(word => `• ${word}`)
-                                        ];
-                                    }
-                                }
-                            }
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true,
-                                ticks: {
-                                    callback: function(value) {
-                                        // 确保值是数字类型
-                                        if (typeof value === 'string') {
-                                            value = parseFloat(value) || 0;
-                                        }
-                                        return `${value.toFixed(0)}%`;
-                                    }
-                                },
-                                grid: {
-                                    color: 'rgba(0, 0, 0, 0.05)'
-                                }
-                            },
-                            x: {
-                                grid: {
-                                    display: false
-                                }
-                            }
-                        }
-                    }
-                });
-                
-                // 显示关键词分组
-                const keywordsContainer = container.querySelector('.topic-keywords');
-                const keywordsHtml = topics.map((topic, idx) => {
-                    const color = colors[idx % colors.length];
-                    // 确保权重是数字类型
-                    let weight = topic.weight;
-                    if (typeof weight === 'string') {
-                        weight = parseFloat(weight.replace('%', '')) || 0;
-                    }
-                    
-                    // 安全处理可能包含花括号的文本
-                    const safeTitle = topic.title ? topic.title.replace(/[{}]/g, '') : `主题${idx+1}`;
-                    const safeDescription = topic.description ? topic.description.replace(/[{}]/g, '') : '';
-                    
-                    return `
-                        <div class="topic-group" style="--index: ${idx}">
-                            <div class="topic-group-header">
-                                <div class="topic-color" style="background-color: ${color.border}"></div>
-                                <span class="topic-title">${safeTitle}</span>
-                                <span class="topic-percentage">${weight.toFixed(1)}%</span>
-                            </div>
-                            <div class="topic-keywords-list">
-                                ${topic.keywords.map(word => {
-                                    // 安全处理可能包含花括号的关键词
-                                    const safeWord = typeof word === 'string' ? word.replace(/[{}]/g, '') : word;
-                                    return `<span class="topic-keyword" style="--topic-color: ${color.border}">${safeWord}</span>`;
-                                }).join('')}
-                            </div>
-                            <div class="topic-description mt-2">
-                                <small class="text-muted">${safeDescription}</small>
-                            </div>
-                        </div>
-                    `;
-                }).join('');
-                
-                keywordsContainer.innerHTML = keywordsHtml;
-                
+                // 生成主题洞察已禁用
+                generateTopicInsights(data.topics);
             } catch (error) {
                 console.error('主题分析失败:', error);
                 container.innerHTML = `
@@ -1492,38 +1376,33 @@ ${summary.summary_text || '无摘要内容'}
                                         return;
                                     }
                                     
-                                    if (!data) {
-                                        console.error('API返回数据为空');
-                                        return;
-                                    }
-                                    
-                                    if (data.success && data.topics) {
-                                        // 保存图表数据以便于切换视图
-                                        topicChartData = data;
-                                        
-                                        // 渲染图表
-                                        renderChart(data, currentChartType);
-                                        
-                                        // 更新主题详情列表
-                                        renderTopicList(data.topics);
-                                        
-                                        // 生成主题洞察已禁用
-                                        generateTopicInsights(data.topics);
-                                    } else {
+                                    if (!data || !data.topics || !Array.isArray(data.topics) || data.topics.length === 0) {
+                                        console.error('API返回数据无效:', data);
                                         // 显示错误信息
                                         const topicList = document.querySelector('.topic-list');
                                         if (topicList) {
                                             topicList.innerHTML = `
                                                 <div class="alert alert-danger">
-                                                    ${data.error || '主题分析失败'}
+                                                    ${data && data.error ? data.error : '主题分析失败，未找到有效的主题数据'}
                                                 </div>
                                             `;
                                         }
                                         
                                         document.getElementById('topicInsights').innerHTML = '无法生成主题洞察，分析数据不完整。';
-                                        
-                                        console.error('主题分析数据无效:', data);
+                                        return;
                                     }
+                                    
+                                    // 保存图表数据以便于切换视图
+                                    topicChartData = data;
+                                    
+                                    // 渲染图表
+                                    renderChart(data, currentChartType);
+                                    
+                                    // 更新主题详情列表
+                                    renderTopicList(data.topics);
+                                    
+                                    // 生成主题洞察已禁用
+                                    generateTopicInsights(data.topics);
                                 })
                                 .catch(error => {
                                     console.error('主题分析请求错误:', error);
@@ -1569,7 +1448,7 @@ ${summary.summary_text || '无摘要内容'}
                         // 确保权重是数字类型
                         let weight = topic.weight;
                         if (typeof weight === 'string') {
-                            weight = parseFloat(weight.replace('%', '')) || 0;
+                            weight = parseFloat(weight.replace(/%/g, '')) || 0;
                         }
                         
                         // 安全处理可能包含花括号的标题
@@ -1596,7 +1475,10 @@ ${summary.summary_text || '无摘要内容'}
                             color: colors,
                             tooltip: {
                                 trigger: 'item',
-                                formatter: '{b}: {c}% ({d}%)',
+                                formatter: function(params) {
+                                    // 确保值是数字，并四舍五入到一位小数
+                                    return `${params.name}: ${params.value.toFixed(1)}%`;
+                                },
                                 backgroundColor: 'rgba(255, 255, 255, 0.9)',
                                 borderColor: '#eee',
                                 borderWidth: 1,
@@ -1665,6 +1547,12 @@ ${summary.summary_text || '无摘要内容'}
                             color: colors,
                             tooltip: {
                                 trigger: 'axis',
+                                formatter: function(params) {
+                                    // params是一个数组，取第一个元素
+                                    const param = params[0];
+                                    // 确保值是数字，并四舍五入到一位小数
+                                    return `${param.name}: ${param.value.toFixed(1)}%`;
+                                },
                                 axisPointer: {
                                     type: 'shadow'
                                 },
@@ -1736,7 +1624,9 @@ ${summary.summary_text || '无摘要内容'}
                                 label: {
                                     show: true,
                                     position: 'top',
-                                    formatter: '{c}%',
+                                    formatter: function(params) {
+                                        return params.value.toFixed(1) + '%';
+                                    },
                                     color: '#666'
                                 },
                                 emphasis: {
@@ -1777,7 +1667,7 @@ ${summary.summary_text || '无摘要内容'}
                         // 确保权重是数字类型
                         let weight = topic.weight;
                         if (typeof weight === 'string') {
-                            weight = parseFloat(weight.replace('%', '')) || 0;
+                            weight = parseFloat(weight.replace(/%/g, '')) || 0;
                         }
                         
                         // 安全处理文本

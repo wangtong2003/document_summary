@@ -940,6 +940,148 @@
             overflow: visible !important;
             height: auto !important;
         }
+
+        /* 文件统计区域样式 */
+        .file-stats {
+            background-color: #f8fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 1rem;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+        }
+        
+        .file-stats:hover {
+            background-color: #f1f5f9;
+        }
+        
+        #toggleFilesBtn {
+            padding: 0.25rem 0.5rem;
+            border-color: #e5e7eb;
+            background-color: white;
+            transition: all 0.2s ease;
+        }
+        
+        #toggleFilesBtn:hover {
+            background-color: #f1f5f9;
+            border-color: #d1d5db;
+        }
+        
+        #fileListContainer {
+            max-height: 400px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease;
+        }
+        
+        #fileListContainer.collapsing {
+            transition: max-height 0.3s ease;
+        }
+        
+        /* 自定义折叠动画 */
+        .collapse-transition {
+            transition: all 0.3s ease-in-out;
+            overflow: hidden;
+        }
+        
+        /* 文件列表折叠动画 */
+        @keyframes collapseAnim {
+            from { max-height: 400px; opacity: 1; }
+            to { max-height: 0; opacity: 0; }
+        }
+        
+        @keyframes expandAnim {
+            from { max-height: 0; opacity: 0; }
+            to { max-height: 400px; opacity: 1; }
+        }
+        
+        /* 文件列表滚动条样式 */
+        #fileListContainer::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        
+        #fileListContainer::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+        
+        #fileListContainer::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+        
+        #fileListContainer::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+
+        /* 文件类型统计样式 */
+        .file-types-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+        
+        .file-types-summary .badge {
+            font-size: 0.75rem;
+            font-weight: normal;
+            padding: 0.35em 0.65em;
+            border: 1px solid #e5e7eb;
+        }
+        
+        /* 文件统计区域样式 */
+        .file-stats {
+            background-color: #f8fafc;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.75rem;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+        }
+        
+        .file-stats:hover {
+            background-color: #f1f5f9;
+        }
+        
+        /* 文件列表分组样式 */
+        .file-group {
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px dashed #e5e7eb;
+        }
+        
+        .file-group-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+            color: #6b7280;
+        }
+        
+        /* 让文件预览区域更加紧凑 */
+        .file-preview {
+            margin-top: 0.35rem;
+            padding: 0.35rem 0.65rem;
+        }
+        
+        /* 增强文件列表容器的视觉效果 */
+        #fileListContainer {
+            max-height: 350px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease, opacity 0.2s ease;
+            background-color: #ffffff;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+            padding: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        #fileListContainer.collapsing {
+            transition: max-height 0.3s ease, opacity 0.2s ease;
+        }
     </style>
 </head>
 <body>
@@ -1110,6 +1252,11 @@
         // 获取文件图标
         function getFileIcon(fileName) {
             const extension = fileName.split('.').pop().toLowerCase();
+            return getFileTypeIcon(extension);
+        }
+
+        // 获取文件类型图标
+        function getFileTypeIcon(extension) {
             const icons = {
                 'pdf': 'bi-file-pdf',
                 'docx': 'bi-file-word',
@@ -1119,6 +1266,19 @@
                 'epub': 'bi-book'
             };
             return icons[extension] || 'bi-file-earmark';
+        }
+        
+        // 获取文件类型显示名称
+        function getFileTypeName(extension) {
+            const names = {
+                'pdf': 'PDF文档',
+                'docx': 'Word文档',
+                'doc': 'Word文档',
+                'txt': '文本文件',
+                'md': 'Markdown',
+                'epub': '电子书'
+            };
+            return names[extension] || `${extension.toUpperCase()}文件`;
         }
 
         // 处理文件选择按钮点击
@@ -1155,8 +1315,23 @@
             const validFiles = [];
             const invalidFiles = [];
             
+            // 分类型统计文件
+            const fileTypeStats = {};
+            
             allFiles.forEach(file => {
                 const extension = file.name.split('.').pop().toLowerCase();
+                
+                // 记录文件类型统计
+                if (!fileTypeStats[extension]) {
+                    fileTypeStats[extension] = {
+                        count: 0,
+                        totalSize: 0,
+                        valid: ['pdf', 'docx', 'doc', 'txt', 'md', 'epub'].includes(extension)
+                    };
+                }
+                fileTypeStats[extension].count += 1;
+                fileTypeStats[extension].totalSize += file.size;
+                
                 if (['pdf', 'docx', 'doc', 'txt', 'md', 'epub'].includes(extension)) {
                     validFiles.push(file);
                 } else {
@@ -1166,6 +1341,7 @@
 
             console.log('有效的文件:', validFiles);
             console.log('不支持的文件:', invalidFiles);
+            console.log('文件类型统计:', fileTypeStats);
 
             if (validFiles.length === 0) {
                 const message = invalidFiles.length > 0 
@@ -1197,6 +1373,17 @@
                 return pathA.localeCompare(pathB);
             });
 
+            // 生成详细的文件类型统计信息
+            let fileTypeSummary = '';
+            Object.entries(fileTypeStats)
+                .filter(([ext, stats]) => stats.valid)
+                .sort((a, b) => b[1].count - a[1].count)
+                .forEach(([ext, stats]) => {
+                    fileTypeSummary += `<span class="badge bg-light text-dark me-2 mb-1">
+                        ${ext.toUpperCase()}: ${stats.count}个 (${formatFileSize(stats.totalSize)})
+                    </span>`;
+                });
+
             // 显示处理结果
             let statusMessage = '';
             if (invalidFiles.length > 0) {
@@ -1217,6 +1404,7 @@
                 statusMessage += `<div class="alert alert-success alert-dismissible fade show mb-2" role="alert">
                     <i class="bi bi-check-circle me-2"></i>
                     成功添加 ${uniqueFiles.length} 个文件
+                    <div class="mt-2 file-types-summary">${fileTypeSummary}</div>
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>`;
             }
@@ -1290,41 +1478,120 @@
         function updateFilePreview(files, statusMessage = '') {
             let previewHtml = statusMessage;
             
-            files.forEach((file, index) => {
-                const fileSize = formatFileSize(file.size);
-                const fileIcon = getFileIcon(file.name);
-                const filePath = file.webkitRelativePath || file.name;
+            // 添加文件统计和折叠控制区域
+            if (files.length > 0) {
+                const totalSize = files.reduce((total, file) => total + file.size, 0);
                 
                 previewHtml += `
-                    <div class="file-preview" id="file-${index}">
-                        <div class="file-preview-header">
-                            <div class="file-preview-info">
-                                <i class="bi ${fileIcon} file-icon"></i>
-                                <div class="file-preview-title" 
-                                     onmouseover="showTooltip(event, '${filePath}')"
-                                     onmouseout="hideTooltip(event)"
-                                     onmousemove="moveTooltip(event)">${filePath}</div>
-                                <div class="file-preview-size">${fileSize}</div>
-                            </div>
-                            <button class="file-preview-remove" onclick="removeFile(${index})" title="移除">
-                                <i class="bi bi-x"></i>
-                            </button>
+                    <div class="file-stats mb-2 d-flex justify-content-between align-items-center">
+                        <div>
+                            <i class="bi bi-file-earmark me-1"></i>
+                            <span>已选择 ${files.length} 个文件</span>
+                            <span class="text-muted ms-2 small">(${formatFileSize(totalSize)})</span>
                         </div>
+                        <button class="btn btn-sm btn-outline-secondary" id="toggleFilesBtn" onclick="toggleFilesList()">
+                            <i class="bi bi-chevron-down" id="toggleFilesIcon"></i>
+                            <span class="ms-1 small">详情</span>
+                        </button>
                     </div>
+                    <div id="fileListContainer" class="collapse show">
                 `;
-            });
+                
+                // 按文件类型分组文件
+                const fileGroups = {};
+                files.forEach(file => {
+                    const extension = file.name.split('.').pop().toLowerCase();
+                    if (!fileGroups[extension]) {
+                        fileGroups[extension] = [];
+                    }
+                    fileGroups[extension].push(file);
+                });
+                
+                // 为每个文件类型创建分组
+                Object.entries(fileGroups).forEach(([extension, groupFiles]) => {
+                    // 获取图标和文件类型显示名称
+                    const fileIcon = getFileTypeIcon(extension);
+                    const fileTypeName = getFileTypeName(extension);
+                    const groupSize = groupFiles.reduce((total, file) => total + file.size, 0);
+                    
+                    previewHtml += `
+                        <div class="file-group">
+                            <div class="file-group-header">
+                                <i class="bi ${fileIcon}"></i>
+                                <span>${fileTypeName}</span>
+                                <span class="text-muted ms-1">(${groupFiles.length}个文件，${formatFileSize(groupSize)})</span>
+                            </div>
+                    `;
+                    
+                    // 添加分组中的文件
+                    groupFiles.forEach(file => {
+                        const uniqueIndex = files.indexOf(file);
+                        const fileSize = formatFileSize(file.size);
+                        const fileIcon = getFileIcon(file.name);
+                        const filePath = file.webkitRelativePath || file.name;
+                        
+                        previewHtml += `
+                            <div class="file-preview" id="file-${uniqueIndex}">
+                                <div class="file-preview-header">
+                                    <div class="file-preview-info">
+                                        <i class="bi ${fileIcon} file-icon"></i>
+                                        <div class="file-preview-title" 
+                                             onmouseover="showTooltip(event, '${filePath}')"
+                                             onmouseout="hideTooltip(event)"
+                                             onmousemove="moveTooltip(event)">${filePath}</div>
+                                        <div class="file-preview-size">${fileSize}</div>
+                                    </div>
+                                    <button class="file-preview-remove" onclick="removeFile(${uniqueIndex})" title="移除">
+                                        <i class="bi bi-x"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    previewHtml += `</div>`;
+                });
+                
+                previewHtml += `</div>`;
+            }
 
             filePreviewArea.innerHTML = previewHtml;
+            
+            // 如果文件数量超过一定阈值，默认折叠文件列表
+            if (files.length > 5) {
+                toggleFilesList(true);
+            }
+        }
+
+        // 切换文件列表的展开/折叠状态
+        function toggleFilesList(forceCollapse = false) {
+            const fileListContainer = document.getElementById('fileListContainer');
+            const toggleFilesIcon = document.getElementById('toggleFilesIcon');
+            
+            if (!fileListContainer) return;
+            
+            if (forceCollapse || fileListContainer.classList.contains('show')) {
+                // 收起列表
+                fileListContainer.classList.remove('show');
+                toggleFilesIcon.classList.remove('bi-chevron-up');
+                toggleFilesIcon.classList.add('bi-chevron-down');
+            } else {
+                // 展开列表
+                fileListContainer.classList.add('show');
+                toggleFilesIcon.classList.remove('bi-chevron-down');
+                toggleFilesIcon.classList.add('bi-chevron-up');
+            }
         }
 
         // 移除文件
         function removeFile(index) {
             selectedFiles = selectedFiles.filter((_, i) => i !== index);
-            document.getElementById(`file-${index}`).remove();
+            
+            // 更新文件预览区域
+            updateFilePreview(selectedFiles);
             
             if (selectedFiles.length === 0) {
                 submitBtn.disabled = true;
-                filePreviewArea.innerHTML = '';
             }
         }
 
@@ -1845,6 +2112,9 @@
             // 初始化已有的Markdown内容
             initializeMarkdownContent();
             
+            // 初始化Bootstrap组件
+            initializeBootstrapComponents();
+            
             // 强制修复可能的内容截断问题
             function forceFixContentDisplay() {
                 console.log("强制修复内容显示问题...");
@@ -1884,6 +2154,21 @@
                 setTimeout(forceFixContentDisplay, 300);
             });
         });
+        
+        // 初始化Bootstrap组件
+        function initializeBootstrapComponents() {
+            // 初始化所有collapse组件
+            document.querySelectorAll('.collapse').forEach(collapseEl => {
+                new bootstrap.Collapse(collapseEl, {
+                    toggle: false
+                });
+            });
+            
+            // 初始化所有tooltip组件
+            document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(tooltipEl => {
+                new bootstrap.Tooltip(tooltipEl);
+            });
+        }
         
         // 切换高级选项面板
         function toggleAdvancedOptions() {

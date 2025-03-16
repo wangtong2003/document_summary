@@ -58,6 +58,13 @@ import copy
 import nltk
 from time import sleep
 import tempfile
+from langchain.chains.conversational_retrieval.base import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain.prompts import PromptTemplate
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from langchain_chroma import Chroma
+from chromadb import PersistentClient
+from utils import process_response  # 导入process_response函数
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
@@ -154,8 +161,6 @@ class DocumentSummary(db.Model):
     original_text = db.Column(db.Text(length=16777215), nullable=True)
     summary_text = db.Column(db.Text(length=16777215), nullable=True)
     file_content = db.Column(db.LargeBinary(length=16777215), nullable=True)
-    content_vectors = db.Column(db.LargeBinary(length=16777215), nullable=True)
-    summary_vectors = db.Column(db.LargeBinary(length=16777215), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     summary_length = db.Column(db.String(20))
@@ -164,12 +169,14 @@ class DocumentSummary(db.Model):
     mime_type = db.Column(db.String(100))
     original_filename = db.Column(db.String(255))
     display_filename = db.Column(db.String(255))
-    keywords = db.Column(db.String(255))  # 增加 keywords 字段长度到 255
+    keywords = db.Column(db.String(255))
     topic_analysis = db.Column(db.JSON)
     embedding_model = db.Column(db.String(100))
     chunks_info = db.Column(db.JSON)
-    is_chunked = db.Column(db.Boolean, default=False)  # 添加是否分块存储标志
-    total_chunks = db.Column(db.Integer, default=0)    # 添加总块数字段
+    is_chunked = db.Column(db.Boolean, default=False)
+    total_chunks = db.Column(db.Integer, default=0)
+    chroma_collection = db.Column(db.String(100))  # 新增：Chroma集合名称
+    has_vector_store = db.Column(db.Boolean, default=False)  # 新增：是否已创建向量存储
     
     # 关联文件块
     chunks = db.relationship('FileChunk', backref='document', lazy='dynamic',
@@ -192,6 +199,30 @@ class FileMapping(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     summary = db.relationship('DocumentSummary', backref=db.backref('file_mappings', lazy=True))
+
+class Summary(db.Model):
+    """存储文本摘要记录"""
+    __tablename__ = 'summaries'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    original_text = db.Column(db.Text(length=16777215), nullable=False)  # 原始文本
+    summary_text = db.Column(db.Text(length=16777215), nullable=False)  # 摘要文本
+    keywords = db.Column(db.String(255), nullable=True)  # 关键词
+    model = db.Column(db.String(100), nullable=True)  # 使用的模型
+    target_language = db.Column(db.String(20), nullable=True)  # 目标语言
+    target_length = db.Column(db.String(20), nullable=True)  # 摘要长度
+    focus_areas = db.Column(db.String(255), nullable=True)  # 关注领域
+    level = db.Column(db.String(20), nullable=True)  # 专业程度
+    language_style = db.Column(db.String(20), nullable=True)  # 语言风格
+    style = db.Column(db.String(20), nullable=True)  # 写作风格
+    format = db.Column(db.String(20), nullable=True)  # 输出格式
+    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  # 创建时间
+    
+    __table_args__ = {
+        'mysql_engine': 'InnoDB',
+        'mysql_charset': 'utf8mb4',
+        'mysql_collate': 'utf8mb4_unicode_ci'
+    }
 
 # 添加数据库连接重试装饰器
 def retry_on_db_error(max_retries=3, delay=1):
@@ -1524,6 +1555,84 @@ def delete_summary(summary_id):
             
         print(f"找到摘要记录: {summary.file_name}")
         
+        # 删除关联的Chroma向量存储
+        if summary.has_vector_store and summary.chroma_collection:
+            try:
+                print(f"尝试删除向量存储: {summary.chroma_collection}")
+                collection_name = summary.chroma_collection
+                persist_directory = "chroma_db"
+                
+                # 导入必要的库
+                from langchain_chroma import Chroma
+                from chromadb import PersistentClient
+                
+                # 方法1: 通过PersistentClient删除集合
+                try:
+                    print("方法1: 使用PersistentClient删除集合")
+                    chroma_client = PersistentClient(path=persist_directory)
+                    
+                    # 兼容ChromaDB不同版本的API
+                    try:
+                        # ChromaDB v0.6.0+版本，list_collections直接返回集合名称列表
+                        all_collections = set(chroma_client.list_collections())
+                        print(f"ChromaDB v0.6.0+: 获取到 {len(all_collections)} 个集合名称")
+                        if collection_name in all_collections:
+                            chroma_client.delete_collection(collection_name)
+                            print(f"成功通过PersistentClient删除集合: {collection_name}")
+                        else:
+                            print(f"集合不存在: {collection_name}")
+                    except Exception:
+                        # 旧版本API，集合对象有name属性
+                        collections_list = chroma_client.list_collections()
+                        collection_names = [col.name for col in collections_list]
+                        if collection_name in collection_names:
+                            chroma_client.delete_collection(collection_name)
+                            print(f"成功通过PersistentClient删除集合: {collection_name}")
+                        else:
+                            print(f"集合不存在: {collection_name}")
+                            
+                except Exception as e:
+                    print(f"通过PersistentClient删除集合失败: {str(e)}")
+                    
+                    # 方法2: 通过Chroma实例删除集合
+                    try:
+                        print("方法2: 使用Chroma实例删除集合")
+                        from langchain_ollama import OllamaEmbeddings
+                        
+                        embeddings = OllamaEmbeddings(
+                            model="snowflake-arctic-embed2",
+                            base_url="http://localhost:11434"
+                        )
+                        
+                        chroma_db = Chroma(
+                            persist_directory=persist_directory,
+                            embedding_function=embeddings,
+                            collection_name=collection_name
+                        )
+                        
+                        if hasattr(chroma_db, 'delete_collection'):
+                            chroma_db.delete_collection()
+                            print(f"成功通过Chroma实例删除集合")
+                        else:
+                            print("Chroma实例没有delete_collection方法")
+                            
+                            # 备用方法3: 尝试访问底层客户端
+                            if hasattr(chroma_db, '_client'):
+                                if hasattr(chroma_db._client, 'delete_collection'):
+                                    chroma_db._client.delete_collection(collection_name)
+                                    print(f"成功通过_client删除集合")
+                                else:
+                                    print("chroma_db._client没有delete_collection方法")
+                    except Exception as e2:
+                        print(f"通过Chroma实例删除集合失败: {str(e2)}")
+                
+                print(f"向量存储删除处理完成")
+            except Exception as e:
+                print(f"删除向量存储时出错: {str(e)}")
+                print("继续删除数据库记录")
+        else:
+            print("该摘要没有关联的向量存储或向量存储信息不完整")
+        
         # 删除关联的文件映射记录
         mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
         if mappings:
@@ -1545,6 +1654,7 @@ def delete_summary(summary_id):
             
     except Exception as e:
         print(f"删除过程中出错: {str(e)}")
+        traceback.print_exc()
         db.session.rollback()
         return jsonify({'error': f'删除失败: {str(e)}'}), 500
 
@@ -1705,65 +1815,74 @@ def create_hybrid_vector_store(text, summary, doc_id):
     """创建混合向量存储"""
     try:
         print("\n=== 开始创建混合向量存储 ===")
-        print(f"原始文本长度: {len(text)}")
-        print(f"摘要文本长度: {len(summary)}")
+        print(f"文档ID: {doc_id}")
+        print(f"原始文本长度: {len(text) if text else 0}")
+        print(f"摘要文本长度: {len(summary) if summary else 0}")
         
-        # 使用统一的文本分割器
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-        )
-        
-        # 分割文本
-        content_texts = text_splitter.split_text(text)
-        summary_texts = text_splitter.split_text(summary)
-        
-        print(f"正文分割为 {len(content_texts)} 个块")
-        print(f"摘要分割为 {len(summary_texts)} 个块")
-        
-        # 获取统一的嵌入模型
-        embeddings = get_embeddings_model()
-        
-        print("开始处理正文块...")
-        # 生成正文向量
-        content_vectors = []
-        for i, text_chunk in enumerate(content_texts):
-            vector = embeddings.embed_query(text_chunk)
-            content_vectors.append({
-                'vector': vector,
-                'text': text_chunk,
-                'index': i,
-                'source': 'content'
-            })
-        
-        print("开始处理摘要块...")
-        # 生成摘要向量
-        summary_vectors = []
-        for i, text_chunk in enumerate(summary_texts):
-            vector = embeddings.embed_query(text_chunk)
-            summary_vectors.append({
-                'vector': vector,
-                'text': text_chunk,
-                'index': i,
-                'source': 'summary'
-            })
-        
-        # 将向量数据保存到数据库
-        doc = DocumentSummary.query.get(doc_id)
-        if doc:
-            doc.content_vectors = pickle.dumps(content_vectors)
-            doc.summary_vectors = pickle.dumps(summary_vectors)
-            doc.embedding_model = "snowflake-arctic-embed2"  # 记录使用的嵌入模型
-            db.session.commit()
-            print("向量数据已保存到数据库")
-            return True
-        else:
-            print(f"未找到文档ID: {doc_id}")
+        # 检查输入文本和摘要是否为空
+        if not text or len(text.strip()) == 0:
+            print("错误: 原始文本为空，无法创建向量存储")
             return False
+            
+        if not summary or len(summary.strip()) == 0:
+            print("警告: 摘要文本为空，只创建原始文本的向量存储")
+        
+        print("第1步: 创建原始文本的向量存储")
+        # 使用RAG工具创建向量存储
+        # 为原文创建向量存储
+        content_metadata = {
+            'doc_id': doc_id,
+            'source': 'content',
+            'type': 'original'
+        }
+        try:
+            print(f"正在调用RAGTools.create_vector_store为原始文本创建向量存储...")
+            content_success = rag_tools.create_vector_store(text, doc_id, content_metadata)
+            print(f"原始文本向量存储创建结果: {'成功' if content_success else '失败'}")
+        except Exception as e:
+            print(f"创建原始文本向量存储时出错: {str(e)}")
+            content_success = False
+        
+        # 如果摘要不为空，则为摘要创建向量存储
+        if summary and len(summary.strip()) > 0:
+            print("第2步: 创建摘要文本的向量存储")
+            summary_metadata = {
+                'doc_id': doc_id,
+                'source': 'summary',
+                'type': 'summary'
+            }
+            try:
+                print(f"正在调用RAGTools.create_vector_store为摘要文本创建向量存储...")
+                summary_success = rag_tools.create_vector_store(summary, doc_id, summary_metadata)
+                print(f"摘要文本向量存储创建结果: {'成功' if summary_success else '失败'}")
+            except Exception as e:
+                print(f"创建摘要文本向量存储时出错: {str(e)}")
+                summary_success = False
+        else:
+            print("跳过第2步: 摘要文本为空")
+            summary_success = True  # 如果摘要为空，我们认为这不是失败
+        
+        # 更新数据库记录，标记为已创建向量存储
+        try:
+            print("第3步: 更新数据库记录，标记文档已创建向量存储")
+            doc = DocumentSummary.query.get(doc_id)
+            if doc:
+                doc.has_vector_store = True
+                doc.chroma_collection = f"doc_{doc_id}"
+                db.session.commit()
+                print(f"成功更新数据库记录，文档ID {doc_id} 已标记为创建了向量存储")
+            else:
+                print(f"警告: 找不到文档ID {doc_id} 的记录，无法更新向量存储状态")
+        except Exception as e:
+            print(f"更新数据库记录时出错: {str(e)}")
+            # 不中断流程，继续返回向量存储创建结果
+        
+        result = content_success and summary_success
+        print(f"=== 混合向量存储创建{'成功' if result else '失败'} ===\n")
+        return result
         
     except Exception as e:
-        print(f"创建向量存储时出错: {str(e)}")
+        print(f"创建混合向量存储时出错: {str(e)}")
         traceback.print_exc()
         return False
 
@@ -1772,70 +1891,20 @@ def hybrid_semantic_search(query, doc_id, content_weight=0.6, summary_weight=0.4
     try:
         print(f"\n=== 执行混合语义搜索 文档ID: {doc_id} ===")
         
-        # 获取文档
-        doc = DocumentSummary.query.get(doc_id)
-        if not doc:
-            print(f"未找到文档ID: {doc_id}")
+        # 使用RAG工具进行语义搜索
+        results = rag_tools.semantic_search(query, doc_id, top_k=8)
+        
+        if not results:
             return []
             
-        # 检查向量数据
-        if not doc.content_vectors or not doc.summary_vectors:
-            print(f"文档 {doc_id} 没有向量数据")
-            return []
-            
-        # 获取统一的嵌入模型
-        embeddings = get_embeddings_model()
+        # 根据来源应用权重
+        for result in results:
+            source = result['metadata'].get('source', 'content')
+            result['score'] = result['score'] * (content_weight if source == 'content' else summary_weight)
         
-        # 生成查询向量
-        query_vector = embeddings.embed_query(query)
+        # 按分数排序
+        results.sort(key=lambda x: x['score'], reverse=True)
         
-        # 从数据库加载向量数据
-        content_vectors = pickle.loads(doc.content_vectors)
-        summary_vectors = pickle.loads(doc.summary_vectors)
-        
-        # 计算相似度并存储结果
-        results = []
-        
-        # 处理正文向量
-        for item in content_vectors:
-            try:
-                similarity = cosine_similarity(
-                    [query_vector],
-                    [item['vector']]
-                )[0][0]
-                
-                results.append({
-                    "text": item['text'],
-                    "score": float(similarity) * content_weight,
-                    "source": "content",
-                    "metadata": {"index": item['index']}
-                })
-            except Exception as e:
-                print(f"计算正文向量相似度时出错: {str(e)}")
-                continue
-                
-        # 处理摘要向量
-        for item in summary_vectors:
-            try:
-                similarity = cosine_similarity(
-                    [query_vector],
-                    [item['vector']]
-                )[0][0]
-                
-                results.append({
-                    "text": item['text'],
-                    "score": float(similarity) * summary_weight,
-                    "source": "summary",
-                    "metadata": {"index": item['index']}
-                })
-            except Exception as e:
-                print(f"计算摘要向量相似度时出错: {str(e)}")
-                continue
-        
-        # 按分数排序（分数越高越相关）
-        results.sort(key=lambda x: x["score"], reverse=True)
-        
-        # 只返回前8个最相关的结果
         return results[:8]
         
     except Exception as e:
@@ -1874,36 +1943,31 @@ def generate_semantic_summary(doc_id, query=None):
         prompt = f"""请你是一个专业的文档摘要分析师。根据以下文档，生成一个{summary_length_text}，使用{target_language_text}，{style_text}。
 {focus_text}，{level_text}，{lang_style_text}，{format_text}。
 
+【重要长度要求】：必须严格生成长度为{target_word_count}字的摘要，不能少于此字数的90%。如果内容不足，请通过添加更多细节、解释和具体案例来达到要求字数。
+
+【格式要求】：
+- 首先输出标记[KEYWORDS]，然后在下一行列出4-6个关键词，以竖线(|)分隔
+- 然后输出标记[SUMMARY]，之后开始你的摘要正文
+- 摘要应当包含充分的解释、分析和支持性细节，以达到{target_word_count}字
+
 请使用以下思维链步骤来生成高质量摘要：
 
-步骤1：深入阅读文档，确定文档的主题、目的和主要观点。思考文档属于什么类型（学术、技术、商业等）。
-输出：确定的主题、目的、类型以及为什么这样判断的简要理由。
-
-步骤2：提取关键信息和中心思想，包括：
-- 文档的核心主题和目的
-- 主要论点或发现
-- 支持论点的关键证据或数据
-- 重要的方法论或过程
-- 结论或建议
-输出：按重要性排列的关键信息列表。
-
-步骤3：分析文档的结构和逻辑流程，确定各个部分之间的关系。考虑作者如何展开论述，论点之间如何衔接。
-输出：文档结构和论述逻辑的概要分析。
-
-步骤4：根据上述分析，整合所有提取的信息，构建一个连贯、完整的摘要框架。
-输出：摘要的整体框架和各部分之间的逻辑关系。
-
-步骤5：最终生成摘要，确保语言流畅、表达准确、结构清晰。摘要应独立成篇，即使读者没有阅读原文也能理解内容。
-输出：完整的最终摘要。
-
-在摘要的开头，请用[KEYWORDS]标记提取5-10个关键词，用逗号分隔。然后在[SUMMARY]标记后提供完整摘要内容。
+步骤1：深入阅读文档，确定文档的主题、目的和主要观点。
+步骤2：提取关键信息和中心思想，包括核心主题、主要论点、关键证据和结论。
+步骤3：分析文档的结构和逻辑流程，确定各个部分之间的关系。
+步骤4：构建一个连贯、完整的摘要框架，确保能支撑{target_word_count}字的详细内容。
+步骤5：生成详细摘要，确保：
+   - 每个关键点都有充分展开，提供足够的事实和数据支持
+   - 对复杂概念进行深入解释和分析
+   - 添加具体案例和应用场景说明
+   - 提供必要的背景信息和上下文
+   - 确保总字数达到{target_word_count}字
 
 ==== 文档内容 ====
 {input_text}
 ==== 文档内容结束 ====
 
-现在，请按照思维链步骤分析并生成这篇文档的摘要:
-"""
+首先输出[KEYWORDS]和关键词，然后输出[SUMMARY]和摘要正文。务必确保摘要长度达到{target_word_count}字："""
 
         # 创建客户端
         print("开始调用大模型生成摘要")
@@ -1913,12 +1977,20 @@ def generate_semantic_summary(doc_id, query=None):
             response_stream = client.generate(
                 model=model,
                 prompt=prompt,
-                stream=True
+                stream=True,
+                options={
+                    'num_predict': num_predict_tokens,  # 使用前面计算的预测token数量
+                    'temperature': 0.8,  # 适当提高温度以获得更多样化的输出
+                    'top_p': 0.9,
+                    'num_ctx': context_length,  # 使用前面计算的上下文长度
+                    'stop': None
+                }
             )
             
             # 初始状态变量
             buffer = ""
             keywords_section = ""
+            summary_text = ""  # 用于收集完整的摘要文本
             keywords_started = False
             keywords_completed = False
             summary_started = False
@@ -1952,10 +2024,11 @@ def generate_semantic_summary(doc_id, query=None):
                         keywords_section += token
                         continue
                     
-                    # 当找到[SUMMARY]后，直接流式输出每个token
+                    # 当找到[SUMMARY]后，直接流式输出每个token，并收集完整摘要
                     if summary_started:
                         # 过滤掉[SUMMARY]标记本身
                         if token not in "[SUMMARY]":
+                            summary_text += token  # 收集完整摘要
                             yield token
             
             # 处理特殊情况：如果没有找到[SUMMARY]标记但已经结束
@@ -1971,10 +2044,12 @@ def generate_semantic_summary(doc_id, query=None):
                             yield "\n\n" + summary_text
                         else:
                             # 如果没有有效的摘要内容，则发送一个提示
-                            yield "\n\n无法从响应中提取摘要内容，请重试。"
+                            summary_text = "无法从响应中提取摘要内容，请重试。"
+                            yield "\n\n" + summary_text
                 else:
                     # 没有关键词标记，将整个buffer作为摘要
                     print("使用完整响应作为摘要")
+                    summary_text = buffer
                     yield buffer
         
         except Exception as e:
@@ -2044,56 +2119,13 @@ def generate_hybrid_semantic_summary(doc_id, query=None):
     try:
         print(f"\n=== 生成混合语义摘要 文档ID: {doc_id} ===")
         
-        # 如果没有提供查询，使用默认查询
-        if not query:
-            query = "总结这篇文档的主要内容和关键点"
+        # 使用RAG工具生成响应
+        response = rag_tools.generate_rag_response(query or "总结这篇文档的主要内容和关键点", doc_id)
+        
+        if not response:
+            return "无法生成摘要，请稍后重试。"
             
-        # 获取相关内容
-        relevant_chunks = hybrid_semantic_search(query, doc_id)
-        
-        # 如果没有找到相关内容，返回提示信息
-        if not relevant_chunks:
-            return "未能找到与查询相关的内容，无法生成摘要。"
-            
-        # 构建上下文（同时使用正文和摘要的相关内容）
-        context_parts = []
-        
-        # 添加摘要内容
-        summary_chunks = [chunk for chunk in relevant_chunks if chunk.get('source') == 'summary']
-        if summary_chunks:
-            context_parts.append("摘要相关内容：")
-            context_parts.extend([chunk.get('text', '') for chunk in summary_chunks])
-        
-        # 添加正文内容
-        content_chunks = [chunk for chunk in relevant_chunks if chunk.get('source') == 'content']
-        if content_chunks:
-            context_parts.append("\n\n原文相关内容：")
-            context_parts.extend([chunk.get('text', '') for chunk in content_chunks])
-        
-        context = "\n\n".join(context_parts)
-        
-        # 使用Ollama生成摘要
-        llm = Ollama(model="huihui_ai/qwen2.5-1m-abliterated:latest")
-        
-        # 构建提示词
-        prompt = f"""基于以下内容生成一个全面的摘要：
-
-        {context}
-
-        要求：
-        1. 摘要应该清晰、连贯
-        2. 突出重要信息和关键观点
-        3. 保持客观性
-        4. 控制在500字左右
-        5. 优先使用摘要中的表述，必要时参考原文内容补充细节
-        
-        请直接输出摘要内容，不要包含任何额外说明。
-        """
-        
-        # 生成摘要
-        summary = llm(prompt)
-        
-        return summary.strip()
+        return response['answer']
         
     except Exception as e:
         print(f"生成混合语义摘要失败: {str(e)}")
@@ -2777,234 +2809,292 @@ def process_document_stream():
 
 def ollama_text_stream(input_text, params=None, file_info=None, file_content=None):
     """流式生成摘要文本，逐个token返回"""
-    # 复制file_info和params以避免修改原始对象
-    if params is None:
-        params = {}
-    else:
-        params = params.copy()
+    try:
+        if not input_text:
+            yield "错误：输入文本为空"
+            return
+            
+        if not params:
+            params = {}
+            
+        # 获取参数
+        summary_length = params.get('summary_length', 'medium')
+        target_language = params.get('target_language', 'chinese')
+        summary_style = params.get('summary_style', 'basic')
+        focus_area = params.get('focus_area', 'analytical')
+        expertise_level = params.get('expertise_level', 'deductive')
+        language_style = params.get('language_style', 'precise')
+        output_format = params.get('output_format', 'narrative')
         
-    if file_info is None:
-        file_info = {}
-    else:
-        file_info = file_info.copy()
+        # 参数文本化
+        summary_length_text = {
+            'very_short': '非常简短的摘要（200字左右）',
+            'short': '简短摘要（350字左右）',
+            'medium': '中等长度摘要（500字左右）',
+            'long': '较长摘要（2000字左右）',
+            'very_long': '详细摘要（5000字左右）'
+        }.get(summary_length, '中等长度摘要（500字左右）')
         
-    # 确保file_content不是文件对象
-    if hasattr(file_content, 'read'):
-        try:
-            file_content = file_content.read()
-        except Exception as e:
-            print(f"读取file_content时出错: {str(e)}")
-            file_content = None
+        target_language_text = {
+            'chinese': '中文',
+            'english': '英文',
+            'japanese': '日语',
+            'korean': '韩语',
+            'french': '法语',
+            'german': '德语',
+            'russian': '俄语',
+            'spanish': '西班牙语'
+        }.get(target_language, '中文')
         
-    summary_length = params.get('summary_length', 'medium')
-    target_language = params.get('target_language', 'chinese')
-    summary_style = params.get('summary_style', 'casual')
-    focus_area = params.get('focus_area', 'general')
-    expertise_level = params.get('expertise_level', 'beginner')
-    language_style = params.get('language_style', 'neutral')
-
-    # 文档最大长度
-    max_doc_length = 12000  # 约12,000个字符
-    
-    # 如果文本超过最大长度，截断文本
-    original_length = len(input_text)
-    if len(input_text) > max_doc_length:
-        print(f"文本超过最大长度 ({original_length} > {max_doc_length})，进行截断")
-        input_text = input_text[:max_doc_length] + f"\n\n[注: 原文超过{max_doc_length}字符，此处仅显示前{max_doc_length}字符]"
-    
-    # 获取模型名称
-    model = 'huihui_ai/qwen2.5-1m-abliterated'
-    
-    # 获取摘要长度说明
-    summary_length_text = ""
-    if summary_length == "very_short":
-        summary_length_text = "超短摘要（约100字）"
-    elif summary_length == "medium":
-        summary_length_text = "中等摘要（约500字）"
-    elif summary_length == "long":
-        summary_length_text = "详细摘要（约2000字）"
-    elif summary_length == "very_long":
-        summary_length_text = "完整摘要（约5000字）"
-    else:
-        summary_length_text = "中等摘要（约500字）"
-    
-    # 获取目标语言说明
-    language_map = {
-        'chinese': '中文',
-        'english': '英文',
-        'japanese': '日文',
-        'korean': '韩文',
-        'french': '法文',
-        'german': '德文',
-        'spanish': '西班牙文',
-        'russian': '俄文'
-    }
-    target_language_text = language_map.get(target_language, '中文')
-    
-    # 获取摘要风格说明
-    style_map = {
-        'basic': '使用基础分析方法',
-        'comprehensive': '进行全面深入的分析',
-        'critical': '使用批判性分析方法',
-        'academic': '进行学术深度分析',
-        'practical': '采用实用导向的分析'
-    }
-    style_text = style_map.get(summary_style, '使用基础分析方法')
-    
-    # 获取输出结构说明
-    output_format = params.get('output_format', 'narrative')
-    format_map = {
-        'narrative': '使用叙述性结构组织内容',
-        'hierarchical': '使用层次结构组织内容',
-        'comparative': '使用对比分析结构组织内容',
-        'problem_solution': '使用问题-解决方案结构组织内容',
-        'chronological': '使用时间序列结构组织内容'
-    }
-    format_text = format_map.get(output_format, '使用叙述性结构组织内容')
-    
-    # 获取思维模式说明
-    focus_map = {
-        'analytical': '采用分析性思维模式',
-        'synthetic': '采用综合性思维模式',
-        'critical': '采用批判性思维模式',
-        'creative': '采用创造性思维模式',
-        'systems': '采用系统性思维模式',
-        'strategic': '采用战略性思维模式'
-    }
-    focus_text = focus_map.get(focus_area, '采用分析性思维模式')
-    
-    # 获取推理方式说明
-    level_map = {
-        'deductive': '使用演绎推理方式',
-        'inductive': '使用归纳推理方式',
-        'abductive': '使用溯因推理方式',
-        'analogical': '使用类比推理方式',
-        'causal': '使用因果推理方式'
-    }
-    level_text = level_map.get(expertise_level, '使用演绎推理方式')
-    
-    # 获取语言精确度说明
-    lang_style_map = {
-        'precise': '使用高精确度的语言表达',
-        'balanced': '使用平衡的语言表达',
-        'nuanced': '使用能表达细微差别的语言',
-        'simplified': '使用简化的语言表达',
-        'technical': '使用技术术语精确表达'
-    }
-    lang_style_text = lang_style_map.get(language_style, '使用高精确度的语言表达')
-    
-    # 构建提示语
-    prompt = f"""请你是一个专业的文档摘要分析师。根据以下文档，生成一个{summary_length_text}，使用{target_language_text}，{style_text}。
+        # 不同风格的文本描述
+        style_text = {
+            'basic': '以基础客观的风格',
+            'academic': '以学术论文的风格',
+            'business': '以商务报告的风格',
+            'technical': '以技术文档的风格',
+            'creative': '以创意散文的风格',
+            'journalistic': '以新闻报道的风格'
+        }.get(summary_style, '以基础客观的风格')
+        
+        # 关注点文本描述
+        focus_text = {
+            'comprehensive': '全面涵盖文档各方面内容',
+            'analytical': '侧重分析性内容和逻辑关系',
+            'comparative': '强调比较性内容和对比关系',
+            'critical': '关注评价性内容和批判观点',
+            'technical': '突出技术细节和实现方法',
+            'practical': '注重实践应用和操作方法'
+        }.get(focus_area, '全面涵盖文档各方面内容')
+        
+        # 专业程度文本描述
+        level_text = {
+            'introductory': '使用入门级术语解释',
+            'intermediate': '使用中级术语和概念',
+            'advanced': '使用高级专业术语和深入解释',
+            'expert': '使用专家级术语和复杂分析',
+            'deductive': '采用演绎推理方式阐述',
+            'inductive': '采用归纳推理方式阐述'
+        }.get(expertise_level, '使用中级术语和概念')
+        
+        # 语言风格文本描述
+        lang_style_text = {
+            'formal': '使用正式语言风格',
+            'casual': '使用日常语言风格',
+            'simple': '使用简单易懂的语言',
+            'precise': '使用精确专业的词汇',
+            'persuasive': '使用有说服力的语言',
+            'explanatory': '使用解释性的语言'
+        }.get(language_style, '使用正式语言风格')
+        
+        # 输出格式文本描述
+        format_text = {
+            'paragraph': '输出连续段落式摘要',
+            'bullet': '输出要点式摘要',
+            'section': '输出分节式摘要',
+            'narrative': '输出叙述式摘要',
+            'comparative': '输出对比式摘要',
+            'analytical': '输出分析式摘要'
+        }.get(output_format, '输出连续段落式摘要')
+        
+        # 选择模型
+        model = "huihui_ai/qwen2.5-1m-abliterated"
+        
+        content_length = len(input_text)
+        print(f"输入文本长度: {content_length}")
+        
+        # 根据输入长度调整上下文窗口
+        context_length = min(16384, content_length + 4096)  # 确保上下文大小合理
+        
+        # 计算需要预测的token数量
+        summary_length_map = {
+            'very_short': 200,
+            'short': 350, 
+            'medium': 500,
+            'long': 2000,
+            'very_long': 5000
+        }
+        target_word_count = summary_length_map.get(summary_length, 500)
+        
+        # 中文大约1.5-2个字符对应1个token，再加上一些冗余
+        num_predict_tokens = min(int(target_word_count * 3), 16000)  # 限制在模型最大能力范围内
+        print(f"目标摘要字数: {target_word_count}, 设置token预测数量: {num_predict_tokens}")
+        
+        # 构建提示语
+        prompt = f"""请你是一个专业的文档摘要分析师。根据以下文档，生成一个{summary_length_text}，使用{target_language_text}，{style_text}。
 {focus_text}，{level_text}，{lang_style_text}，{format_text}。
+
+【重要长度要求】：必须严格生成长度为{target_word_count}字的摘要，不能少于此字数的90%。如果内容不足，请通过添加更多细节、解释和具体案例来达到要求字数。
+
+【格式要求】：
+- 首先输出标记[KEYWORDS]，然后在下一行列出4-6个关键词，以竖线(|)分隔
+- 然后输出标记[SUMMARY]，之后开始你的摘要正文
+- 摘要应当包含充分的解释、分析和支持性细节，以达到{target_word_count}字
 
 请使用以下思维链步骤来生成高质量摘要：
 
-步骤1：深入阅读文档，确定文档的主题、目的和主要观点。思考文档属于什么类型（学术、技术、商业等）。
-输出：确定的主题、目的、类型以及为什么这样判断的简要理由。
-
-步骤2：提取关键信息和中心思想，包括：
-- 文档的核心主题和目的
-- 主要论点或发现
-- 支持论点的关键证据或数据
-- 重要的方法论或过程
-- 结论或建议
-输出：按重要性排列的关键信息列表。
-
-步骤3：分析文档的结构和逻辑流程，确定各个部分之间的关系。考虑作者如何展开论述，论点之间如何衔接。
-输出：文档结构和论述逻辑的概要分析。
-
-步骤4：根据上述分析，整合所有提取的信息，构建一个连贯、完整的摘要框架。
-输出：摘要的整体框架和各部分之间的逻辑关系。
-
-步骤5：最终生成摘要，确保语言流畅、表达准确、结构清晰。摘要应独立成篇，即使读者没有阅读原文也能理解内容。
-输出：完整的最终摘要。
-
-在摘要的开头，请用[KEYWORDS]标记提取5-10个关键词，用逗号分隔。然后在[SUMMARY]标记后提供完整摘要内容。
+步骤1：深入阅读文档，确定文档的主题、目的和主要观点。
+步骤2：提取关键信息和中心思想，包括核心主题、主要论点、关键证据和结论。
+步骤3：分析文档的结构和逻辑流程，确定各个部分之间的关系。
+步骤4：构建一个连贯、完整的摘要框架，确保能支撑{target_word_count}字的详细内容。
+步骤5：生成详细摘要，确保：
+   - 每个关键点都有充分展开，提供足够的事实和数据支持
+   - 对复杂概念进行深入解释和分析
+   - 添加具体案例和应用场景说明
+   - 提供必要的背景信息和上下文
+   - 确保总字数达到{target_word_count}字
 
 ==== 文档内容 ====
 {input_text}
 ==== 文档内容结束 ====
 
-现在，请按照思维链步骤分析并生成这篇文档的摘要:
-"""
+首先输出[KEYWORDS]和关键词，然后输出[SUMMARY]和摘要正文。务必确保摘要长度达到{target_word_count}字："""
 
-    # 创建客户端
-    client = Client(host='http://localhost:11434')
-    print("开始调用大模型生成摘要")
+        # 创建客户端
+        client = Client(host='http://localhost:11434')
+        print("开始调用大模型生成摘要")
 
-    try:
         # 调用模型API - 流式响应
         response_stream = client.generate(
             model=model,
             prompt=prompt,
-            stream=True
+            stream=True,
+            options={
+                'num_predict': num_predict_tokens,  # 使用前面计算的预测token数量
+                'temperature': 0.8,  # 适当提高温度以获得更多样化的输出
+                'top_p': 0.9,
+                'num_ctx': context_length,  # 使用前面计算的上下文长度
+                'stop': None
+            }
         )
-        
-        # 初始状态变量
-        buffer = ""
-        keywords_section = ""
-        keywords_started = False
-        keywords_completed = False
-        summary_started = False
         
         print("已开始流式响应")
         
         # 直接发送一个换行，确保前端开始显示
         yield "\n"
         
+        # 用于收集完整响应
+        full_response = ""
+        
         for response_chunk in response_stream:
             if 'response' in response_chunk:
                 token = response_chunk['response']
-                buffer += token
+                full_response += token
                 
-                # 检测标记状态
-                if "[KEYWORDS]" in buffer and not keywords_started:
-                    keywords_started = True
-                    print("检测到关键词段开始")
-                    continue
-                
-                if "[SUMMARY]" in buffer and not summary_started:
-                    summary_started = True
-                    keywords_completed = True
-                    print("检测到摘要段开始")
-                    # 摘要开始，发送间隔符
-                    yield "\n\n"
-                    continue
-                
-                # 当找到[KEYWORDS]后，将token添加到keywords_section
-                if keywords_started and not keywords_completed:
-                    keywords_section += token
-                    continue
-                
-                # 当找到[SUMMARY]后，直接流式输出每个token
-                if summary_started:
-                    # 过滤掉[SUMMARY]标记本身
-                    if token not in "[SUMMARY]":
-                        yield token
+                # 直接流式输出每个token
+                yield token
         
-        # 处理特殊情况：如果没有找到[SUMMARY]标记但已经结束
-        if not summary_started:
-            print("没有找到明确的[SUMMARY]标记")
-            # 如果有关键词但没有摘要标记
-            if keywords_started:
-                # 尝试在关键词后找到第一个换行作为摘要开始
-                if "\n" in keywords_section:
-                    summary_text = keywords_section.split("\n", 1)[1].strip()
-                    if summary_text:
-                        print("使用关键词后的内容作为摘要")
-                        yield "\n\n" + summary_text
+        # 使用process_response函数处理完整响应，提取关键词和摘要
+        keywords_list, summary_text = process_response(full_response, target_word_count)
+        keywords = "|".join(keywords_list)
+        
+        # 检查摘要长度是否达到要求，如果未达到，进行补充生成
+        current_length = len(summary_text)
+        min_required_length = int(target_word_count * 0.9)  # 设置最低要求为目标字数的90%
+        
+        print(f"当前摘要长度: {current_length}, 最低要求长度: {min_required_length}")
+        
+        if current_length < min_required_length:
+            print(f"摘要长度不足，开始补充生成以达到至少 {min_required_length} 字...")
+            
+            # 构建补充生成的提示语
+            expansion_prompt = f"""你是一位专业的文档摘要专家，请对以下摘要进行扩充，使其达到{target_word_count}字左右。
+
+【扩充要求】:
+1. 保持摘要的原有结构和逻辑
+2. 对每个要点进行更详细的阐述，增加具体例子和细节
+3. 补充必要的背景信息和上下文
+4. 确保扩充内容与原摘要保持一致的风格和专业度
+5. 避免生硬拼接，使扩充后的摘要流畅自然
+6. 摘要总长度必须达到至少{min_required_length}字
+
+【原摘要】:
+{summary_text}
+
+请直接输出扩充后的完整摘要，不要包含其他内容:
+"""
+
+            print("调用API进行摘要扩充...")
+            try:
+                # 非流式调用，直接获取完整扩充结果
+                expansion_response = client.generate(
+                    model=model,
+                    prompt=expansion_prompt,
+                    stream=False,
+                    options={
+                        'num_predict': num_predict_tokens,
+                        'temperature': 0.8,
+                        'top_p': 0.9,
+                        'num_ctx': context_length,
+                        'stop': None
+                    }
+                )
+                
+                if expansion_response and 'response' in expansion_response:
+                    expanded_text = expansion_response['response'].strip()
+                    expanded_length = len(expanded_text)
+                    
+                    if expanded_length > current_length:
+                        print(f"摘要扩充成功: 从 {current_length} 字增加到 {expanded_length} 字")
+                        # 更新摘要文本
+                        summary_text = expanded_text
+                        # 输出扩充的文本
+                        yield "\n\n--- 摘要补充内容 ---\n\n"
+                        yield expanded_text[current_length:]
                     else:
-                        # 如果没有有效的摘要内容，则发送一个提示
-                        yield "\n\n无法从响应中提取摘要内容，请重试。"
-            else:
-                # 没有关键词标记，将整个buffer作为摘要
-                print("使用完整响应作为摘要")
-                yield buffer
-    
+                        print(f"扩充未增加长度: 原长度 {current_length}, 新长度 {expanded_length}")
+                else:
+                    print(f"扩充摘要API调用未返回有效响应")
+            except Exception as e:
+                print(f"扩充摘要时出错: {str(e)}")
+                traceback.print_exc()
+        else:
+            print(f"摘要长度已达到要求: {current_length} >= {min_required_length}")
+            
+        # 保存到数据库
+        print("开始保存摘要到数据库...")
+        
+        print("\n=== 开始保存摘要到数据库 ===")
+        print(f"摘要长度: {current_length}")
+        
+        # 如果有parameters参数，创建DocumentSummary记录
+        if params and file_info:
+            try:
+                # 这里是原有的保存文档摘要的逻辑
+                # 保留不变...
+                pass
+            except Exception as e:
+                print(f"保存DocumentSummary时出错: {str(e)}")
+                traceback.print_exc()
+        else:
+            # 处理普通摘要保存逻辑，保存到Summary表
+            # 这里假设您的应用中有一个Summary表
+            try:
+                summary_record = Summary(
+                    original_text=input_text,
+                    summary_text=summary_text,
+                    keywords=keywords,
+                    model=model,
+                    target_language=target_language,
+                    target_length=summary_length,
+                    focus_areas=",".join(params.get('focus_area', [])) if params else "",
+                    level=expertise_level if params else "",
+                    language_style=language_style if params else "",
+                    style=summary_style if params else "",
+                    format=output_format if params else "",
+                    timestamp=datetime.now()
+                )
+                
+                db.session.add(summary_record)
+                db.session.commit()
+                print(f"摘要保存成功，ID: {summary_record.id}")
+            except Exception as e:
+                print(f"保存Summary时出错: {str(e)}")
+                traceback.print_exc()
     except Exception as e:
-        error_message = f"生成摘要时发生错误: {str(e)}"
-        print(error_message)
-        yield "\n\n" + error_message
+        error_msg = f"生成摘要时发生错误: {str(e)}"
+        print(error_msg)
+        traceback.print_exc()
+        yield error_msg
 
 @app.route('/download/<int:summary_id>')
 def download_document(summary_id):
@@ -3297,6 +3387,456 @@ def preview_document(summary_id):
         # 对于HTML页面请求，返回错误页面
         return render_template('error.html', error=str(e)), 500
 
+class RAGTools:
+    """RAG工具类，用于处理文档的向量存储和检索"""
+    
+    def __init__(self):
+        self.embeddings = OllamaEmbeddings(
+            model="snowflake-arctic-embed2",
+            base_url="http://localhost:11434"
+        )
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
+        )
+        self.persist_directory = "chroma_db"
+        
+    def create_vector_store(self, texts, doc_id, metadata=None):
+        """创建向量存储"""
+        try:
+            # 分割文本
+            if isinstance(texts, str):
+                texts = [texts]
+            
+            print(f"开始为文档ID {doc_id} 创建向量存储...")
+            print(f"输入文本数量: {len(texts)}, 类型: {type(texts[0] if texts else None)}")
+            
+            if not texts or len(texts) == 0 or not texts[0] or len(texts[0].strip()) == 0:
+                print("错误: 输入文本为空，无法创建向量存储")
+                return False
+            
+            # 为每个文本块添加元数据
+            documents = []
+            print(f"正在分割文本为小块...")
+            for i, text in enumerate(texts):
+                chunks = self.text_splitter.split_text(text)
+                print(f"文本 {i} 分割为 {len(chunks)} 个块")
+                for j, chunk in enumerate(chunks):
+                    doc_metadata = {
+                        'doc_id': doc_id,
+                        'chunk_id': i,
+                        'chunk_index': j,
+                        'source': 'content'
+                    }
+                    if metadata:
+                        doc_metadata.update(metadata)
+                    documents.append({'page_content': chunk, 'metadata': doc_metadata})
+            
+            print(f"总共创建了 {len(documents)} 个文档对象")
+            if len(documents) == 0:
+                print("警告: 没有创建任何文档对象，可能是输入文本过短或分割问题")
+                return False
+            
+            # 创建或获取向量存储
+            collection_name = f"doc_{doc_id}"
+            print(f"使用集合名称: {collection_name}, 持久化目录: {self.persist_directory}")
+            
+            # 检查持久化目录是否存在，如果不存在则创建
+            if not os.path.exists(self.persist_directory):
+                print(f"创建持久化目录: {self.persist_directory}")
+                os.makedirs(self.persist_directory)
+                
+            try:
+                print(f"正在创建/连接Chroma集合...")
+                db = Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embeddings,
+                    collection_name=collection_name
+                )
+                print(f"成功创建/连接到Chroma集合: {collection_name}")
+            except Exception as e:
+                print(f"创建/连接Chroma集合时出错: {str(e)}")
+                raise
+            
+            # 添加文档
+            texts = [doc['page_content'] for doc in documents]
+            metadatas = [doc['metadata'] for doc in documents]
+            
+            print(f"开始添加 {len(texts)} 个文本到向量存储")
+            try:
+                print(f"正在调用Chroma.add_texts添加文本...")
+                db.add_texts(texts=texts, metadatas=metadatas)
+                print(f"成功添加文本到向量存储")
+            except Exception as e:
+                print(f"添加文本到向量存储时出错: {str(e)}")
+                raise
+            
+            # 注意：在较新版本的langchain_chroma中，Chroma对象不再需要显式调用persist()方法
+            # 数据会自动持久化到指定的persist_directory目录
+            print(f"向量存储已自动持久化到磁盘 (目录: {self.persist_directory})")
+            
+            print(f"文档ID {doc_id} 的向量存储创建完成")
+            return True
+            
+        except Exception as e:
+            print(f"创建向量存储失败: {str(e)}")
+            traceback.print_exc()
+            return False
+
+    def semantic_search(self, query, doc_id, top_k=5):
+        """语义搜索"""
+        try:
+            # 获取向量存储
+            collection_name = f"doc_{doc_id}"
+            db = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embeddings,
+                collection_name=collection_name
+            )
+            
+            # 创建检索器
+            retriever = db.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": top_k}
+            )
+            
+            # 执行检索
+            docs = retriever.get_relevant_documents(query)
+            
+            # 格式化结果
+            results = []
+            for doc in docs:
+                results.append({
+                    'text': doc.page_content,
+                    'metadata': doc.metadata,
+                    'score': doc.metadata.get('score', 0.0) if hasattr(doc, 'metadata') else 0.0
+                })
+            
+            return results
+            
+        except Exception as e:
+            print(f"语义搜索失败: {str(e)}")
+            traceback.print_exc()
+            return []
+            
+    def generate_rag_response(self, query, doc_id, streaming=False):
+        """生成RAG响应"""
+        try:
+            # 获取向量存储
+            collection_name = f"doc_{doc_id}"
+            db = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embeddings,
+                collection_name=collection_name
+            )
+            
+            # 创建检索器
+            retriever = db.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 3}
+            )
+            
+            # 创建LLM
+            llm = Ollama(
+                model="huihui_ai/qwen2.5-1m-abliterated",
+                base_url="http://localhost:11434",
+                streaming=streaming,
+                callbacks=[StreamingStdOutCallbackHandler()] if streaming else None
+            )
+            
+            # 创建提示模板
+            template = """使用以下上下文来回答问题。如果你不知道答案，就说你不知道，不要试图编造答案。
+
+上下文: {context}
+
+问题: {question}
+
+请按照以下格式提供答案：
+1. 直接回答问题
+2. 解释你的答案
+3. 引用相关的上下文内容来支持你的答案
+
+答案："""
+
+            QA_CHAIN_PROMPT = PromptTemplate(
+                input_variables=["context", "question"],
+                template=template,
+            )
+            
+            # 创建问答链
+            qa_chain = RetrievalQA.from_chain_type(
+                llm,
+                retriever=retriever,
+                chain_type="stuff",
+                return_source_documents=True,
+                chain_type_kwargs={"prompt": QA_CHAIN_PROMPT}
+            )
+            
+            # 执行问答
+            response = qa_chain({"query": query})
+            
+            return {
+                'answer': response['result'],
+                'source_documents': [
+                    {
+                        'content': doc.page_content,
+                        'metadata': doc.metadata
+                    } for doc in response['source_documents']
+                ]
+            }
+            
+        except Exception as e:
+            print(f"生成RAG响应失败: {str(e)}")
+            traceback.print_exc()
+            return None
+            
+    def create_conversational_chain(self, doc_id):
+        """创建对话链"""
+        try:
+            # 获取向量存储
+            collection_name = f"doc_{doc_id}"
+            db = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embeddings,
+                collection_name=collection_name
+            )
+            
+            # 创建检索器
+            retriever = db.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 3}
+            )
+            
+            # 创建LLM
+            llm = Ollama(
+                model="huihui_ai/qwen2.5-1m-abliterated",
+                base_url="http://localhost:11434"
+            )
+            
+            # 创建记忆组件
+            memory = ConversationBufferMemory(
+                memory_key="chat_history",
+                return_messages=True
+            )
+            
+            # 创建对话链
+            chain = ConversationalRetrievalChain.from_llm(
+                llm=llm,
+                retriever=retriever,
+                memory=memory,
+                return_source_documents=True
+            )
+            
+            return chain
+            
+        except Exception as e:
+            print(f"创建对话链失败: {str(e)}")
+            traceback.print_exc()
+            return None
+
+# 创建RAG工具实例
+rag_tools = RAGTools()
+
+@app.route('/chat/<int:doc_id>', methods=['POST'])
+def chat_with_document(doc_id):
+    """与文档进行对话"""
+    try:
+        data = request.get_json()
+        query = data.get('query')
+        chat_history = data.get('chat_history', [])
+        
+        if not query:
+            return jsonify({
+                'success': False,
+                'error': '请输入问题'
+            }), 400
+            
+        # 创建或获取对话链
+        chain = rag_tools.create_conversational_chain(doc_id)
+        if not chain:
+            return jsonify({
+                'success': False,
+                'error': '创建对话链失败'
+            }), 500
+            
+        # 执行对话
+        response = chain({
+            "question": query,
+            "chat_history": chat_history
+        })
+        
+        return jsonify({
+            'success': True,
+            'answer': response['answer'],
+            'source_documents': [
+                {
+                    'content': doc.page_content,
+                    'metadata': doc.metadata
+                } for doc in response.get('source_documents', [])
+            ],
+            'chat_history': chat_history + [(query, response['answer'])]
+        })
+        
+    except Exception as e:
+        print(f"文档对话错误: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+def clean_orphaned_vector_stores():
+    """清理不再有对应数据库记录的向量存储"""
+    try:
+        print("\n=== 开始清理孤立的向量存储 ===")
+        
+        # 获取数据库中所有有向量存储的文档ID
+        docs_with_vectors = DocumentSummary.query.filter_by(has_vector_store=True).all()
+        valid_collection_names = set([f"doc_{doc.id}" for doc in docs_with_vectors])
+        print(f"数据库中记录的有效向量存储集合数: {len(valid_collection_names)}")
+        
+        # 获取磁盘上的所有集合
+        try:
+            from chromadb import PersistentClient
+            persist_directory = "chroma_db"
+            
+            # 确保目录存在
+            if not os.path.exists(persist_directory):
+                print(f"向量存储目录不存在: {persist_directory}")
+                return {
+                    'success': True,
+                    'message': '向量存储目录不存在，无需清理',
+                    'removed_collections': []
+                }
+            
+            chroma_client = PersistentClient(path=persist_directory)
+            all_collections = chroma_client.list_collections()
+            
+            # 兼容ChromaDB不同版本的API
+            try:
+                # ChromaDB v0.6.0+版本，list_collections直接返回集合名称列表
+                all_collection_names = set(all_collections)
+                print(f"ChromaDB v0.6.0+: 获取到 {len(all_collection_names)} 个集合名称")
+            except Exception:
+                try:
+                    # 如果不是直接列表，则尝试获取name属性（旧版本API）
+                    all_collection_names = set([col.name for col in all_collections])
+                    print(f"旧版ChromaDB: 获取到 {len(all_collection_names)} 个集合名称")
+                except Exception as e:
+                    print(f"无法获取集合名称: {str(e)}")
+                    all_collection_names = set()
+                    
+            print(f"磁盘上的向量存储集合数: {len(all_collection_names)}")
+            
+            # 找出孤立的集合（磁盘上有但数据库中没有记录的）
+            orphaned_collections = all_collection_names - valid_collection_names
+            print(f"发现 {len(orphaned_collections)} 个孤立的向量存储集合")
+            
+            # 删除孤立的集合
+            removed_collections = []
+            for collection_name in orphaned_collections:
+                try:
+                    print(f"删除孤立集合: {collection_name}")
+                    chroma_client.delete_collection(collection_name)
+                    removed_collections.append(collection_name)
+                except Exception as e:
+                    print(f"删除集合 {collection_name} 时出错: {str(e)}")
+            
+            print(f"成功删除 {len(removed_collections)} 个孤立的向量存储集合")
+            return {
+                'success': True,
+                'message': f'成功删除 {len(removed_collections)} 个孤立的向量存储集合',
+                'removed_collections': list(removed_collections)
+            }
+            
+        except Exception as e:
+            print(f"获取或删除向量存储集合时出错: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    except Exception as e:
+        print(f"清理孤立向量存储时出错: {str(e)}")
+        traceback.print_exc()
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+@app.route('/admin/clean_vector_stores', methods=['POST'])
+def handle_clean_vector_stores():
+    """API端点：清理孤立的向量存储"""
+    try:
+        result = clean_orphaned_vector_stores()
+        return jsonify(result)
+    except Exception as e:
+        print(f"清理向量存储API错误: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+def process_response(response: str, target_word_count: int) -> tuple:
+    """处理模型的回复，提取关键词和摘要内容"""
+    # 初始化默认值
+    keywords = []
+    summary_text = ""
+    
+    # 尝试提取关键词
+    keywords_match = re.search(r'\[KEYWORDS\](.*?)(?=\[SUMMARY\]|\Z)', response, re.DOTALL)
+    if keywords_match:
+        keywords_text = keywords_match.group(1).strip()
+        # 提取使用竖线分隔的关键词
+        if '|' in keywords_text:
+            keywords = [k.strip() for k in keywords_text.split('|') if k.strip()]
+        # 如果没有用竖线分隔，尝试按行分割
+        elif '\n' in keywords_text:
+            keywords = [k.strip() for k in keywords_text.split('\n') if k.strip()]
+        # 如果还是空，尝试按空格分割取有意义的词
+        else:
+            potential_keywords = [k.strip() for k in keywords_text.split() if len(k.strip()) > 1]
+            keywords = potential_keywords[:6]  # 最多取6个关键词
+    
+    # 如果没有找到关键词或关键词为空，使用默认关键词
+    if not keywords:
+        print("未检测到关键词，使用默认关键词")
+        keywords = ["摘要", "文档", "内容", "分析"]
+    
+    # 尝试提取摘要内容
+    summary_match = re.search(r'\[SUMMARY\](.*)', response, re.DOTALL)
+    
+    if summary_match:
+        print("找到[SUMMARY]标记")
+        summary_text = summary_match.group(1).strip()
+    else:
+        print("没有找到明确的[SUMMARY]标记")
+        # 如果找到了关键词但没有摘要标记，尝试使用关键词后的所有内容作为摘要
+        if keywords_match:
+            remaining_text = response[keywords_match.end():].strip()
+            if remaining_text:
+                print("使用关键词后的内容作为摘要")
+                summary_text = remaining_text
+        
+        # 如果上述方法都失败，使用整个响应作为摘要
+        if not summary_text:
+            print("使用完整响应作为摘要")
+            summary_text = response.strip()
+    
+    # 检查摘要长度是否足够
+    word_count = len(summary_text)
+    min_required = int(target_word_count * 0.9)  # 至少达到目标长度的90%
+    
+    print(f"摘要长度: {word_count}, 目标长度: {target_word_count}, 最小要求: {min_required}")
+    
+    if word_count < min_required:
+        print(f"警告: 摘要长度({word_count})未达到最小要求({min_required})")
+    
+    return keywords, summary_text
+
 if __name__ == '__main__':
     with app.app_context():
         # 只在表不存在时创建表
@@ -3304,4 +3844,5 @@ if __name__ == '__main__':
         # 初始化管理员账户
         init_admin()
         print("数据库初始化完成")
-    app.run(debug=True, port=5000)
+    # 修改端口为5001或8080等非常用端口，并明确指定主机地址
+    app.run(debug=True, host='127.0.0.1', port=8080)

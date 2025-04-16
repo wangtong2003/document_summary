@@ -437,6 +437,160 @@
                 border-bottom: 1px solid rgba(0,0,0,0.05);
             }
         }
+
+        /* 新增样式：高亮匹配文本卡片 */
+        .summary-card.high-relevance {
+            border-left: 4px solid #198754;
+            box-shadow: 0 5px 15px rgba(25, 135, 84, 0.15);
+        }
+
+        .match-excerpt {
+            margin-top: 10px;
+            background-color: rgba(25, 135, 84, 0.1);
+            border-left: 3px solid #198754;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            max-height: 100px;
+            overflow-y: auto;
+            text-align: left;
+        }
+
+        .match-source-badge {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            border-radius: 12px;
+        }
+
+        .source-content {
+            background-color: rgba(25, 135, 84, 0.2);
+            color: #198754;
+            border: 1px solid rgba(25, 135, 84, 0.3);
+        }
+
+        .source-summary {
+            background-color: rgba(13, 110, 253, 0.2);
+            color: #0d6efd;
+            border: 1px solid rgba(13, 110, 253, 0.3);
+        }
+
+        /* 添加文本匹配和其他匹配源的样式 */
+        .source-file_name {
+            background-color: rgba(220, 53, 69, 0.2);
+            color: #dc3545;
+            border: 1px solid rgba(220, 53, 69, 0.3);
+        }
+
+        .source-keywords {
+            background-color: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+            border: 1px solid rgba(255, 193, 7, 0.3);
+        }
+
+        .source-text_match {
+            background-color: rgba(111, 66, 193, 0.2);
+            color: #6f42c1;
+            border: 1px solid rgba(111, 66, 193, 0.3);
+        }
+
+        .match-highlight {
+            background-color: rgba(255, 193, 7, 0.3);
+            padding: 0 2px;
+            border-radius: 3px;
+        }
+
+        .exact-match-card {
+            border-left: 4px solid #dc3545 !important;
+            background-color: rgba(220, 53, 69, 0.03);
+        }
+
+        .search-header {
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+
+        /* 搜索结果计数器样式 */
+        .search-counter {
+            display: inline-block;
+            background-color: #e9ecef;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            color: #495057;
+            margin-left: 10px;
+        }
+
+        /* 调试信息区域 */
+        .debug-section {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .debug-toggle {
+            cursor: pointer;
+            color: #6c757d;
+            text-decoration: underline;
+            font-size: 0.9rem;
+        }
+
+        .debug-content {
+            margin-top: 10px;
+            max-height: 300px;
+            overflow: auto;
+            font-family: monospace;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            background-color: #f1f1f1;
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        /* 添加空结果样式 */
+        .no-results {
+            text-align: center;
+            padding: 40px 20px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .no-results i {
+            font-size: 3rem;
+            color: #dee2e6;
+            margin-bottom: 15px;
+        }
+
+        .no-results h4 {
+            color: #495057;
+            margin-bottom: 10px;
+        }
+
+        .no-results p {
+            color: #6c757d;
+        }
+
+        .search-tips {
+            margin-top: 20px;
+            text-align: left;
+            background-color: #e9ecef;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+
+        .search-tips li {
+            margin-bottom: 8px;
+        }
     </style>
 </head>
 <body>
@@ -472,7 +626,7 @@
                     <input type="text" class="form-control" id="searchInput" 
                            placeholder="输入关键词进行智能检索..."
                            onkeypress="if(event.key === 'Enter') performSearch(this.value.trim())">
-                    <button class="btn btn-primary" type="button" id="searchButton">
+                    <button class="btn btn-primary" type="button" id="searchButton" onclick="performSearch(document.getElementById('searchInput').value.trim())">
                         <i class="bi bi-search"></i> 智能检索
                     </button>
                 </div>
@@ -893,17 +1047,40 @@ ${summary.summary_text || '无摘要内容'}
                 searchButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 搜索中...';
                 searchButton.disabled = true;
 
-                console.log('执行智能检索:', query);
+                console.log('执行检索，关键词:', query);
+                
+                // 创建一个临时的调试信息区域
+                const container = document.getElementById('summariesContainer');
+                container.innerHTML = `
+                    <div class="col-12 p-3 mb-3 bg-light">
+                        <h5>正在搜索，请稍候...</h5>
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+                        </div>
+                    </div>
+                `;
+                
+                // 设置搜索参数
+                const searchParams = { 
+                    query: query,
+                    use_hybrid: true,  // 使用混合检索
+                    min_score: 0.1,    // 非常低的相关度阈值
+                    max_results: 20,   // 增加最大结果数到20
+                    text_match: true   // 启用文本匹配
+                };
+                
+                console.log('搜索参数:', searchParams);
+                
                 const response = await fetch('/api/search', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ query })
+                    body: JSON.stringify(searchParams)
                 });
 
                 // 控制台输出完整原始响应用于调试
-                console.log('搜索原始响应:', response);
+                console.log('搜索原始响应状态:', response.status, response.statusText);
                 
                 // 确保响应成功解析为JSON
                 let data;
@@ -925,31 +1102,66 @@ ${summary.summary_text || '无摘要内容'}
 
                 // 确保data.results始终是数组
                 const results = Array.isArray(data.results) ? data.results : [];
-                console.log('处理后的搜索结果:', results);
-
-                const container = document.getElementById('summariesContainer');
+                console.log(`处理后的搜索结果: ${results.length} 条记录`);
                 
-                // 添加返回按钮和搜索结果提示
+                // 添加返回按钮和搜索结果提示，增加匹配统计
                 let headerHtml = `
                     <div class="col-12 mb-4">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <button class="btn btn-outline-primary" onclick="loadSummaries()">
-                                <i class="bi bi-arrow-left"></i> 返回完整列表
-                            </button>
-                            <span class="text-muted">
-                                搜索 "${query}" 的结果 (${results.length} 条)
-                            </span>
+                        <div class="search-header">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <button class="btn btn-outline-primary" onclick="loadSummaries()">
+                                        <i class="bi bi-arrow-left"></i> 返回完整列表
+                                    </button>
+                                    <span class="search-counter">
+                                        <i class="bi bi-search me-1"></i>${results.length} 条结果
+                                    </span>
+                                </div>
+                                <div class="d-none d-md-block">
+                                    <span class="text-muted">
+                                        搜索关键词: "<strong>${query}</strong>"
+                                    </span>
+                                    ${(data.vector_match || data.text_match) ? `
+                                    <span class="badge bg-info ms-2">向量匹配: ${data.vector_match || 0}</span>
+                                    <span class="badge bg-warning ms-2">文本匹配: ${data.text_match || 0}</span>
+                                    ` : ''}
+                                </div>
+                            </div>
+                            <div class="mt-2">
+                                <span class="debug-toggle" onclick="toggleDebugInfo()">显示/隐藏调试信息</span>
+                                <div id="debugInfo" class="debug-section">
+                                    <h6>调试信息</h6>
+                                    <div class="debug-content">${JSON.stringify(data, null, 2)}</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 `;
                 
                 if (results.length === 0) {
                     container.innerHTML = headerHtml + `
-                        <div class="col-12 text-center py-5">
-                            <i class="bi bi-search" style="font-size: 3rem; color: #dee2e6;"></i>
-                            <h4 class="mt-3">未找到相关结果</h4>
-                            <p class="text-muted">尝试使用其他关键词搜索</p>
-                            ${data.message ? `<p class="text-info">${data.message}</p>` : ''}
+                        <div class="col-12">
+                            <div class="no-results">
+                                <i class="bi bi-search"></i>
+                                <h4>未找到相关结果</h4>
+                                <p class="text-muted">您搜索的关键词 "${query}" 未能找到相关文档</p>
+                                
+                                <div class="search-tips">
+                                    <h5><i class="bi bi-lightbulb me-2"></i>搜索建议</h5>
+                                    <ul>
+                                        <li>尝试使用单个关键词而不是复杂短语</li>
+                                        <li>检查关键词是否拼写正确</li>
+                                        <li>使用更通用的关键词</li>
+                                        <li>减少搜索词的数量</li>
+                                    </ul>
+                                </div>
+                                
+                                <div class="mt-3">
+                                    <a href="/test_search" target="_blank" class="btn btn-secondary">
+                                        <i class="bi bi-bug"></i> 运行搜索诊断
+                                    </a>
+                                </div>
+                            </div>
                         </div>
                     `;
                     return;
@@ -991,31 +1203,103 @@ ${summary.summary_text || '无摘要内容'}
                     const fileExt = safeFileName.split('.').pop() || '';
                     const fileIcon = getFileIcon(fileExt);
                     
+                    // 判断相关度等级并设置样式
+                    const isHighRelevance = safeScore >= 0.6;
+                    const isTextMatch = summary.is_text_match === true;
+                    const scorePercentage = (safeScore * 100).toFixed(1);
+                    
+                    // 匹配文本摘录
+                    let matchExcerpt = summary.match_excerpt || '';
+                    const showMatchExcerpt = matchExcerpt && matchExcerpt.length > 0;
+                    
+                    // 如果是文本匹配，高亮显示匹配的关键词
+                    if (isTextMatch && showMatchExcerpt && query) {
+                        try {
+                            const regex = new RegExp(escapeRegExp(query), 'gi');
+                            matchExcerpt = matchExcerpt.replace(regex, match => `<span class="match-highlight">${match}</span>`);
+                        } catch (e) {
+                            console.error('高亮关键词失败:', e);
+                        }
+                    }
+                    
+                    // 匹配源
+                    const matchSource = summary.match_source || 'content';
+                    
+                    // 获取匹配源对应的CSS类和显示名称
+                    let sourceClass = `source-${matchSource}`;
+                    let sourceName = '';
+                    switch(matchSource) {
+                        case 'content':
+                            sourceName = '原文匹配';
+                            break;
+                        case 'summary':
+                            sourceName = '摘要匹配';
+                            break;
+                        case 'file_name':
+                            sourceName = '文件名匹配';
+                            break;
+                        case 'summary_text':
+                            sourceName = '摘要文本匹配';
+                            break;
+                        case 'keywords':
+                            sourceName = '关键词匹配';
+                            break;
+                        case 'text_match':
+                            sourceName = '文本匹配';
+                            break;
+                        default:
+                            sourceName = `${matchSource}匹配`;
+                    }
+                    
+                    // 设置卡片样式 - 文本精确匹配时使用特殊样式
+                    const cardClass = isTextMatch && (matchSource === 'file_name' || matchSource === 'keywords') 
+                        ? 'exact-match-card' 
+                        : (isHighRelevance ? 'high-relevance' : '');
+                    
                     return `
                     <div class="col-md-4 mb-4">
-                        <div class="card summary-card h-100">
+                        <div class="card summary-card h-100 ${cardClass}">
                             <button class="btn btn-outline-danger btn-sm delete-btn" 
                                     onclick="deleteSummary(${safeId}); event.stopPropagation();"
                                     title="删除摘要">
                                 <i class="bi bi-trash"></i>
                             </button>
+                            
+                            <span class="match-source-badge ${sourceClass}">
+                                <i class="bi ${matchSource === 'content' ? 'bi-file-text' : 
+                                      matchSource === 'summary' || matchSource === 'summary_text' ? 'bi-card-text' : 
+                                      matchSource === 'file_name' ? 'bi-folder' : 
+                                      matchSource === 'keywords' ? 'bi-tags' : 'bi-search'}"></i>
+                                ${sourceName}
+                            </span>
+                            
                             <div class="card-body text-center">
                                 <i class="bi ${fileIcon} file-icon"></i>
-                                ${safeScore !== undefined ? `
-                                    <div class="relevance-score">
-                                        相关度: ${(safeScore * 100).toFixed(1)}%
-                                    </div>
-                                ` : ''}
+                                
+                                <div class="relevance-score" style="background-color: rgba(${isHighRelevance ? '25, 135, 84' : isTextMatch ? '220, 53, 69' : '13, 110, 253'}, 0.9);">
+                                    相关度: ${scorePercentage}%
+                                </div>
+                                
                                 <h5 class="card-title text-truncate" title="${safeFileName}">
                                     ${safeFileName}
                                 </h5>
+                                
                                 <div class="keywords-container mb-2">
                                     ${keywordsHtml}
                                 </div>
-                                <div class="summary-preview mb-3">
+                                
+                                <div class="summary-preview mb-2">
                                     ${summary.summary_text || '无摘要内容'}
                                 </div>
-                                <div class="text-muted">
+                                
+                                ${showMatchExcerpt ? `
+                                <div class="match-excerpt">
+                                    <small class="text-muted mb-1 d-block">匹配文本:</small>
+                                    <div>${matchExcerpt}</div>
+                                </div>
+                                ` : ''}
+                                
+                                <div class="text-muted mt-3">
                                     <small class="me-2">
                                         <i class="bi bi-clock me-1"></i>${summary.created_at || '未知时间'}
                                     </small>
@@ -1026,6 +1310,7 @@ ${summary.summary_text || '无摘要内容'}
                                         <i class="bi bi-text-paragraph me-1"></i>${summary.summary_length || '未指定长度'}
                                     </small>
                                 </div>
+                                
                                 <div class="mt-3">
                                     <button class="btn btn-outline-primary btn-sm me-2" onclick="showSummaryDetail(${safeId}); event.stopPropagation();">
                                         <i class="bi bi-eye"></i> 查看摘要
@@ -1040,39 +1325,51 @@ ${summary.summary_text || '无摘要内容'}
                                         <i class="bi bi-pie-chart"></i> 主题分析
                                     </button>
                                 </div>
-                                ${summary.topic_analysis ? `
-                                    <div class="topic-chart-container mt-4">
-                                        <h6 class="mb-3">主题分布分析</h6>
-                                        <canvas class="topic-chart" height="200"></canvas>
-                                        <div class="topic-keywords mt-3">
-                                            ${Array.isArray(summary.topic_analysis.topic_keywords) ? 
-                                                summary.topic_analysis.topic_keywords.map((words, idx) => `
-                                            <div class="mb-2">
-                                                <strong>主题${idx + 1}:</strong>
-                                                ${Array.isArray(words) ? 
-                                                    words.map(word => `<span class="topic-keyword">${word}</span>`).join('') 
-                                                    : ''}
-                                            </div>
-                                        `).join('') : ''}
-                                        </div>
-                                    </div>
-                                ` : ''}
                             </div>
                         </div>
                     </div>
                     `;
                 }).join('');
 
-                container.innerHTML = headerHtml + resultsHtml;
+                container.innerHTML = headerHtml + (resultsHtml || `
+                    <div class="col-12 alert alert-warning">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        解析到了 ${results.length} 条结果，但渲染HTML失败
+                    </div>
+                    <div class="col-12">
+                        <pre class="bg-light p-3 small">${JSON.stringify(results, null, 2)}</pre>
+                    </div>
+                `);
             } catch (error) {
                 console.error('搜索错误:', error);
-                alert(error.message || '搜索过程中发生错误');
+                const container = document.getElementById('summariesContainer');
+                container.innerHTML = `
+                    <div class="col-12">
+                        <div class="alert alert-danger">
+                            <i class="bi bi-exclamation-triangle me-2"></i>
+                            搜索过程中发生错误: ${error.message}
+                        </div>
+                        <div class="mb-3">
+                            <a href="/test_search" target="_blank" class="btn btn-secondary">
+                                <i class="bi bi-bug"></i> 运行搜索诊断
+                            </a>
+                            <button onclick="loadSummaries()" class="btn btn-primary ms-2">
+                                <i class="bi bi-arrow-left"></i> 返回摘要列表
+                            </button>
+                        </div>
+                    </div>
+                `;
             } finally {
                 // 恢复按钮状态
                 const searchButton = document.getElementById('searchButton');
                 searchButton.innerHTML = '<i class="bi bi-search"></i> 智能检索';
                 searchButton.disabled = false;
             }
+        }
+
+        // 转义正则表达式中的特殊字符函数
+        function escapeRegExp(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         }
 
         // 绑定搜索事件
@@ -1757,6 +2054,15 @@ ${summary.summary_text || '无摘要内容'}
                 topicChart.resize();
             }
         });
+
+        // 添加调试信息显示切换功能
+        function toggleDebugInfo() {
+            const debugSection = document.getElementById('debugInfo');
+            if (debugSection) {
+                const currentDisplay = debugSection.style.display;
+                debugSection.style.display = currentDisplay === 'block' ? 'none' : 'block';
+            }
+        }
     </script>
 </body>
 </html>

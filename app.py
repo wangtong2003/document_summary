@@ -1,7 +1,7 @@
 import pymysql
 pymysql.install_as_MySQLdb()
 
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory, redirect
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory, redirect, url_for
 from flask_session import Session  # 添加 Flask-Session 导入
 import asyncio
 from ollama import Client
@@ -64,9 +64,10 @@ from langchain.prompts import PromptTemplate
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain_chroma import Chroma
 from chromadb import PersistentClient
-from utils import process_response  # 导入process_response函数
+import urllib.parse
+import unicodedata
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
 UPLOAD_FOLDER = 'uploads'
 DOCUMENTS_FOLDER = 'documents'  # 新增永久文档存储目录
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'docx', 'doc', 'md', 'epub'}
@@ -161,6 +162,8 @@ class DocumentSummary(db.Model):
     original_text = db.Column(db.Text(length=16777215), nullable=True)
     summary_text = db.Column(db.Text(length=16777215), nullable=True)
     file_content = db.Column(db.LargeBinary(length=16777215), nullable=True)
+    content_vectors = db.Column(db.LargeBinary(length=16777215), nullable=True)  # 存储内容的向量数据
+    summary_vectors = db.Column(db.LargeBinary(length=16777215), nullable=True)  # 存储摘要的向量数据
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     summary_length = db.Column(db.String(20))
@@ -1819,6 +1822,15 @@ def create_hybrid_vector_store(text, summary, doc_id):
         print(f"原始文本长度: {len(text) if text else 0}")
         print(f"摘要文本长度: {len(summary) if summary else 0}")
         
+        # 检查RAGTools是否已初始化
+        global rag_tools
+        if rag_tools is None:
+            print("RAGTools尚未初始化，正在尝试初始化...")
+            init_rag_tools()
+            if rag_tools is None:
+                print("RAGTools初始化失败，无法创建向量存储")
+                return False
+        
         # 检查输入文本和摘要是否为空
         if not text or len(text.strip()) == 0:
             print("错误: 原始文本为空，无法创建向量存储")
@@ -2190,6 +2202,9 @@ def handle_hybrid_summary(doc_id):
 def search_documents():
     """搜索文档"""
     try:
+        # 记录开始时间用于性能统计
+        start_time = time.time()
+        
         data = request.get_json()
         if not data:
             return jsonify({
@@ -2198,7 +2213,12 @@ def search_documents():
                 'results': []
             }), 400
             
-        query = data.get('query')
+        query = data.get('query', '').strip()
+        use_hybrid = data.get('use_hybrid', True)  # 默认使用混合检索
+        min_score_threshold = data.get('min_score', 0.15)  # 进一步降低相关度阈值到0.15
+        max_results = data.get('max_results', 20)  # 限制返回结果数量，默认20条
+        enable_text_match = data.get('text_match', True)  # 启用文本匹配兜底
+        
         if not query:
             return jsonify({
                 'success': False, 
@@ -2206,96 +2226,370 @@ def search_documents():
                 'results': []
             }), 400
             
-        print(f"\n=== 执行文档语义搜索 关键词: {query} ===")
+        print(f"\n=== 搜索文档 关键词: '{query}' ===")
+        print(f"查询参数: 筛选阈值={min_score_threshold}, 最大结果数={max_results}, 文本匹配启用={enable_text_match}, 混合检索={use_hybrid}")
         
-        # 检查 Ollama 服务是否可用
-        try:
-            embeddings = get_embeddings_model()
-            # 生成查询向量
-            query_vector = embeddings.embed_query(query)
-        except Exception as e:
-            print(f"Ollama 服务不可用: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': 'Ollama 服务不可用，请确保服务已启动并正常运行',
-                'results': []
-            }), 503
+        # 获取所有文档
+        summaries = DocumentSummary.query.all()
+        print(f"找到 {len(summaries)} 个文档")
+        
+        # 将查询转换为小写，便于文本匹配
+        query_lower = query.lower()
+        print(f"搜索关键词(小写): '{query_lower}'")
         
         results = []
-        # 获取所有有向量数据的文档
-        summaries = DocumentSummary.query.filter(
-            db.and_(
-                DocumentSummary.content_vectors.isnot(None),
-                DocumentSummary.summary_vectors.isnot(None)
-            )
-        ).all()
+        text_match_count = 0
+        vector_match_count = 0
         
+        # 初始化向量搜索
+        embeddings = None
+        query_vector = None
+        can_use_vector = False
+        
+        if use_hybrid:
+            try:
+                embeddings = get_embeddings_model()
+                query_vector = embeddings.embed_query(query)
+                can_use_vector = True
+                print("成功生成查询向量，可以使用向量搜索")
+            except Exception as e:
+                print(f"向量模型初始化失败: {str(e)}")
+                print("将仅使用文本匹配")
+                can_use_vector = False
+        
+        # 初始化统计数据
+        vector_attempts = 0
+        vector_success = 0
+        text_attempts = 0
+        text_success = 0
+        all_vector_scores = []
+        
+        # 遍历所有文档
         for summary in summaries:
             try:
-                # 从数据库加载向量数据
-                content_vectors = pickle.loads(summary.content_vectors)
-                summary_vectors = pickle.loads(summary.summary_vectors)
+                doc_id = summary.id
+                file_name = summary.file_name or ""
+                summary_text = summary.summary_text or ""
+                keywords = summary.keywords or ""
                 
-                # 计算最大相似度
-                max_similarity = 0
+                print(f"\n处理文档: {doc_id} - {file_name}")
+                
+                # 初始化变量
+                found_match = False
                 best_match_text = ""
+                best_match_score = 0
+                best_match_source = ""
+                is_text_match = False
                 
-                # 检查正文向量
-                for item in content_vectors:
-                    try:
-                        similarity = cosine_similarity(
-                            [query_vector],
-                            [item['vector']]
-                        )[0][0]
-                        if similarity > max_similarity:
-                            max_similarity = similarity
-                            best_match_text = item['text']
-                    except Exception as e:
-                        print(f"计算正文向量相似度时出错: {str(e)}")
-                        continue
+                # 1. 首先尝试文本匹配
+                if enable_text_match:
+                    text_attempts += 1
+                    
+                    # 检查文件名匹配
+                    if file_name:
+                        # 添加更多调试信息
+                        file_name_lower = file_name.lower()
+                        print(f"文件名: '{file_name}', 转小写: '{file_name_lower}'")
+                        print(f"查询词: '{query}', 转小写: '{query_lower}'")
+                        
+                        # 尝试多种匹配方法
+                        filename_match = False
+                        
+                        # 1. 直接包含匹配
+                        if query_lower in file_name_lower:
+                            filename_match = True
+                            print(f"✓ 文件名直接匹配成功: '{query_lower}' 在 '{file_name_lower}' 中")
+                        # 2. 分词后部分匹配 - 处理文件名中的分隔符
+                        elif any(query_lower in part.lower() for part in re.split(r'[_\-\s.]+', file_name)):
+                            filename_match = True
+                            print(f"✓ 文件名分词匹配成功: '{query_lower}' 匹配了文件名的某一部分")
+                        # 3. 尝试Unicode规范化后匹配 - 处理中文编码差异
+                        elif unicodedata.normalize('NFKC', query_lower) in unicodedata.normalize('NFKC', file_name_lower):
+                            filename_match = True
+                            print(f"✓ 文件名Unicode规范化后匹配成功")
+                            
+                        if filename_match:
+                            found_match = True
+                            is_text_match = True
+                            best_match_text = file_name
+                            best_match_score = 0.6  # 文件名匹配给较高分数
+                            best_match_source = "file_name"
+                            text_match_count += 1
+                            text_success += 1
+                    
+                    # 检查摘要文本匹配
+                    elif summary_text and query_lower in summary_text.lower():
+                        print(f"✓ 摘要文本匹配: '{query_lower}' 在摘要中")
+                        found_match = True
+                        is_text_match = True
+                        best_match_text = summary_text
+                        best_match_score = 0.4  # 摘要匹配给中等分数
+                        best_match_source = "summary"
+                        text_match_count += 1
+                        text_success += 1
+
+                    # 检查关键词匹配
+                    elif keywords:
+                        # 转换关键词格式
+                        if isinstance(keywords, str):
+                            keywords_list = keywords.split(',')
+                        else:
+                            keywords_list = keywords
+
+                        keywords_list = [k.strip().lower() for k in keywords_list if k.strip()]
+                        
+                        # 添加调试信息
+                        print(f"关键词列表: {keywords_list}")
+                        print(f"查询词: '{query_lower}'")
+                        
+                        # 优化匹配逻辑
+                        keyword_match = False
+                        matched_keyword = ""
+                        
+                        # 1. 直接匹配
+                        if query_lower in keywords_list:
+                            keyword_match = True
+                            matched_keyword = query_lower
+                            print(f"✓ 关键词完全匹配: '{query_lower}' 在关键词列表中")
+                        
+                        # 2. 部分匹配 - 查询词在某个关键词中
+                        elif any(query_lower in k for k in keywords_list):
+                            for k in keywords_list:
+                                if query_lower in k:
+                                    keyword_match = True
+                                    matched_keyword = k
+                                    print(f"✓ 查询词是关键词的子串: '{query_lower}' 在 '{k}' 中")
+                                    break
+                        
+                        # 3. 部分匹配 - 关键词在查询词中
+                        elif any(k in query_lower for k in keywords_list):
+                            for k in keywords_list:
+                                if k in query_lower:
+                                    keyword_match = True
+                                    matched_keyword = k
+                                    print(f"✓ 关键词是查询词的子串: '{k}' 在 '{query_lower}' 中")
+                                    break
+                        
+                        # 4. Unicode规范化后匹配
+                        else:
+                            norm_query = unicodedata.normalize('NFKC', query_lower)
+                            for k in keywords_list:
+                                norm_k = unicodedata.normalize('NFKC', k)
+                                if norm_query in norm_k or norm_k in norm_query:
+                                    keyword_match = True
+                                    matched_keyword = k
+                                    print(f"✓ Unicode规范化后关键词匹配成功: '{k}' 与 '{query_lower}'")
+                                    break
+                        
+                        if keyword_match:
+                            found_match = True
+                            is_text_match = True
+                            best_match_text = matched_keyword
+                            best_match_score = 0.3  # 关键词匹配给适当分数
+                            best_match_source = "keywords"
+                            text_match_count += 1
+                            text_success += 1
                 
-                # 检查摘要向量
-                for item in summary_vectors:
-                    try:
-                        similarity = cosine_similarity(
-                            [query_vector],
-                            [item['vector']]
-                        )[0][0]
-                        if similarity > max_similarity:
-                            max_similarity = similarity
-                            best_match_text = item['text']
-                    except Exception as e:
-                        print(f"计算摘要向量相似度时出错: {str(e)}")
-                        continue
+                # 2. 如果没有文本匹配，且可以使用向量搜索，进行向量搜索
+                if not found_match and can_use_vector:
+                    # 首先尝试使用RAGTools
+                    if summary.has_vector_store and summary.chroma_collection and rag_tools:
+                        vector_attempts += 1
+                        
+                        try:
+                            print(f"使用RAGTools对文档ID {doc_id} 执行向量搜索，top_k=3")
+                            vector_results = rag_tools.semantic_search(query, doc_id, top_k=3)
+                            
+                            if vector_results and len(vector_results) > 0:
+                                print(f"向量搜索返回 {len(vector_results)} 个结果")
+                                
+                                # 输出所有结果的分数，便于调试
+                                scores = [result.get('score', 0) for result in vector_results]
+                                all_vector_scores.extend(scores)  # 收集所有向量分数
+                                
+                                if scores:
+                                    avg_score = sum(scores) / len(scores)
+                                    max_score = max(scores)
+                                    min_score = min(scores)
+                                    print(f"分数分布: 最高={max_score:.4f}, 最低={min_score:.4f}, 平均={avg_score:.4f}")
+                                
+                                # 获取最佳匹配结果
+                                best_result = max(vector_results, key=lambda x: x.get('score', 0))
+                                score = best_result.get('score', 0)
+                                source = best_result.get('metadata', {}).get('source', 'content')
+                                
+                                # 为不同来源应用不同权重
+                                score = score * (0.7 if source == 'content' else 0.3)
+                                
+                                print(f"向量搜索最佳匹配分数: {score:.4f}, 来源: {source}")
+                                
+                                # 检查分数是否高于阈值
+                                if score > min_score_threshold:
+                                    found_match = True
+                                    is_text_match = False
+                                    best_match_text = best_result.get('text', '')
+                                    best_match_score = score
+                                    best_match_source = source
+                                    vector_match_count += 1
+                                    vector_success += 1
+                                    print(f"✓ 向量搜索匹配成功，分数 {score:.4f} > 阈值 {min_score_threshold}")
+                                else:
+                                    print(f"✗ 向量搜索分数 {score:.4f} 低于阈值 {min_score_threshold}，忽略此结果")
+                                    # 清空向量结果，因为相似度太低
+                                    vector_results = []
+                            else:
+                                print("向量搜索未返回任何结果")
+                        except Exception as e:
+                            print(f"RAGTools搜索失败: {str(e)}")
+                            traceback.print_tb(e.__traceback__ if hasattr(e, "__traceback__") else None)
+                            print("继续使用其他方法尝试搜索")
+                            
+                            # 使用备用方法尝试搜索
+                            try:
+                                print("尝试使用备用搜索方法...")
+                                vector_results = rag_tools.semantic_search_fallback(query, doc_id, top_k=3)
+                                
+                                if vector_results and len(vector_results) > 0:
+                                    print(f"备用方法向量搜索返回 {len(vector_results)} 个结果")
+                                    
+                                    # 输出所有结果的分数，便于调试
+                                    scores = [result.get('score', 0) for result in vector_results]
+                                    all_vector_scores.extend(scores)  # 收集所有向量分数
+                                    
+                                    if scores:
+                                        avg_score = sum(scores) / len(scores)
+                                        max_score = max(scores)
+                                        min_score = min(scores)
+                                        print(f"分数分布: 最高={max_score:.4f}, 最低={min_score:.4f}, 平均={avg_score:.4f}")
+                                    
+                                    # 获取最佳匹配结果
+                                    best_result = max(vector_results, key=lambda x: x.get('score', 0))
+                                    score = best_result.get('score', 0)
+                                    source = best_result.get('metadata', {}).get('source', 'content')
+                                    
+                                    # 为不同来源应用不同权重
+                                    score = score * (0.7 if source == 'content' else 0.3)
+                                    
+                                    print(f"备用方法向量搜索最佳匹配分数: {score:.4f}, 来源: {source}")
+                                    
+                                    # 检查分数是否高于阈值
+                                    if score > min_score_threshold:
+                                        found_match = True
+                                        is_text_match = False
+                                        best_match_text = best_result.get('text', '')
+                                        best_match_score = score
+                                        best_match_source = source
+                                        vector_match_count += 1
+                                        vector_success += 1
+                                        print(f"✓ 备用方法向量搜索匹配成功，分数 {score:.4f} > 阈值 {min_score_threshold}")
+                                    else:
+                                        print(f"✗ 备用方法向量搜索分数 {score:.4f} 低于阈值 {min_score_threshold}，忽略此结果")
+                                else:
+                                    print("备用方法向量搜索未返回任何结果")
+                            except Exception as e2:
+                                print(f"备用方法向量搜索也失败: {str(e2)}")
+                                print("继续使用传统搜索方法")
                 
-                # 如果相似度超过阈值
-                if max_similarity > 0.3:  # 可以调整阈值
+                # 如果找到了匹配，添加到结果列表
+                if found_match:
                     # 使用原始文件名作为显示名称
                     display_name = summary.original_filename or summary.display_filename or summary.file_name
+                    
+                    # 提取匹配文本摘录
+                    match_excerpt = best_match_text
+                    if len(match_excerpt) > 200:
+                        match_excerpt = match_excerpt[:200] + "..."
                     
                     results.append({
                         'id': summary.id,
                         'file_name': display_name,
                         'summary_text': summary.summary_text,
-                        'best_match_text': best_match_text,  # 添加最佳匹配文本
+                        'best_match_text': best_match_text,
+                        'match_excerpt': match_excerpt,
                         'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
                         'target_language': summary.target_language,
                         'summary_length': summary.summary_length,
-                        'score': float(max_similarity),  # 保持原始相似度分数
+                        'score': float(best_match_score),
                         'keywords': summary.keywords.split('|') if summary.keywords else [],
-                        'topic_analysis': summary.topic_analysis
+                        'topic_analysis': summary.topic_analysis,
+                        'match_source': best_match_source,
+                        'is_text_match': is_text_match
                     })
+            
+                    print(f"✓ 添加到结果: ID={summary.id}, 分数={best_match_score:.4f}, 匹配源={best_match_source}, 是文本匹配={is_text_match}")
+                else:
+                    print(f"✗ 未找到匹配")
             
             except Exception as e:
                 print(f"处理文档 {summary.id} 时出错: {str(e)}")
+                traceback.print_exc()
                 continue
         
-        # 按相关度排序（分数越高越相关）
+        # 按相关度排序
         results.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 限制结果数量
+        if max_results > 0 and len(results) > max_results:
+            results = results[:max_results]
+        
+        # 计算执行时间
+        execution_time = time.time() - start_time
+        
+        # 计算向量分数统计（如果有）
+        vector_score_stats = {}
+        if all_vector_scores:
+            vector_score_stats = {
+                'count': len(all_vector_scores),
+                'max': max(all_vector_scores),
+                'min': min(all_vector_scores),
+                'avg': sum(all_vector_scores) / len(all_vector_scores),
+                'above_threshold': len([s for s in all_vector_scores if s > min_score_threshold]),
+                'threshold_rate': len([s for s in all_vector_scores if s > min_score_threshold]) / len(all_vector_scores)
+            }
+
+        # 计算成功率
+        text_success_rate = text_success / text_attempts if text_attempts > 0 else 0
+        vector_success_rate = vector_success / vector_attempts if vector_attempts > 0 else 0
+
+        # 输出统计信息
+        total_matches = text_match_count + vector_match_count
+        print(f"\n=== 搜索结果统计 ===")
+        print(f"查询: '{query}'")
+        print(f"总文档数: {len(summaries)}")
+        print(f"共找到 {total_matches} 个相关文档 (文本匹配: {text_match_count}, 向量匹配: {vector_match_count})")
+        print(f"文本匹配尝试: {text_attempts}, 成功: {text_success}, 成功率: {text_success_rate:.2%}")
+        print(f"向量匹配尝试: {vector_attempts}, 成功: {vector_success}, 成功率: {vector_success_rate:.2%}")
+
+        if vector_score_stats:
+            print(f"向量分数统计: 最高={vector_score_stats['max']:.4f}, 最低={vector_score_stats['min']:.4f}, 平均={vector_score_stats['avg']:.4f}")
+            print(f"超过阈值向量匹配比率: {vector_score_stats['threshold_rate']:.2%} ({vector_score_stats['above_threshold']}/{vector_score_stats['count']})")
+
+        print(f"返回 {len(results)} 条结果")
+        print(f"搜索执行时间: {execution_time:.4f}秒")
+        print(f"=== 搜索完成 ===\n")
+
+        # 添加统计信息到返回结果
+        statistics = {
+            'execution_time': execution_time,
+            'total_docs': len(summaries),
+            'text_attempts': text_attempts,
+            'text_success': text_success,
+            'text_success_rate': text_success_rate,
+            'vector_attempts': vector_attempts,
+            'vector_success': vector_success,
+            'vector_success_rate': vector_success_rate,
+            'vector_score_stats': vector_score_stats
+        }
             
         return jsonify({
             'success': True,
             'results': results,
+            'query': query,
+            'result_count': len(results),
+            'vector_match': vector_match_count,
+            'text_match': text_match_count,
+            'execution_time': execution_time,
+            'statistics': statistics,
             'message': '未找到相关文档' if not results else None
         })
         
@@ -3059,9 +3353,9 @@ def ollama_text_stream(input_text, params=None, file_info=None, file_content=Non
         # 如果有parameters参数，创建DocumentSummary记录
         if params and file_info:
             try:
-                # 这里是原有的保存文档摘要的逻辑
-                # 保留不变...
-                pass
+                # 调用保存摘要函数
+                save_summary_to_db(file_info, summary_text, params, file_content)
+                print("摘要已成功保存到数据库")
             except Exception as e:
                 print(f"保存DocumentSummary时出错: {str(e)}")
                 traceback.print_exc()
@@ -3496,23 +3790,61 @@ class RAGTools:
                 collection_name=collection_name
             )
             
-            # 创建检索器
+            # 创建检索器 - 移除不兼容的include_metadata参数
             retriever = db.as_retriever(
                 search_type="similarity",
                 search_kwargs={"k": top_k}
             )
             
             # 执行检索
+            print(f"执行向量搜索，查询：'{query}'，文档ID：{doc_id}，top_k：{top_k}")
             docs = retriever.get_relevant_documents(query)
+            print(f"检索到 {len(docs)} 个相关文档")
             
-            # 格式化结果
+            # 计算查询的嵌入向量
+            query_embedding = self.embeddings.embed_query(query)
+            
+            # 格式化结果并计算相似度分数
             results = []
-            for doc in docs:
-                results.append({
-                    'text': doc.page_content,
-                    'metadata': doc.metadata,
-                    'score': doc.metadata.get('score', 0.0) if hasattr(doc, 'metadata') else 0.0
-                })
+            for i, doc in enumerate(docs):
+                # 从文档中获取当前块的嵌入向量 - 如果Chroma未返回，需要重新计算
+                page_content = doc.page_content
+                
+                # 计算文档内容与查询的相似度分数
+                try:
+                    # 初始默认分数
+                    similarity_score = 0.0
+                    
+                    # 尝试计算余弦相似度，因为我们无法从检索器中直接获取分数
+                    doc_embedding = self.embeddings.embed_query(page_content)
+                    from sklearn.metrics.pairwise import cosine_similarity
+                    similarity_score = float(cosine_similarity([query_embedding], [doc_embedding])[0][0])
+                    
+                    # 确保分数在0-1范围内
+                    similarity_score = max(0.0, min(1.0, similarity_score))
+                    
+                    # 获取元数据
+                    metadata = doc.metadata if hasattr(doc, 'metadata') else {}
+                    
+                    results.append({
+                        'text': doc.page_content,
+                        'metadata': metadata,
+                        'score': similarity_score
+                    })
+                    
+                    print(f"文档 {i+1}: 相似度分数 = {similarity_score:.4f}")
+                    
+                except Exception as e:
+                    print(f"计算文档 {i+1} 相似度时出错: {str(e)}")
+                    # 仍然添加到结果中，但分数为0
+                    results.append({
+                        'text': doc.page_content,
+                        'metadata': doc.metadata if hasattr(doc, 'metadata') else {},
+                        'score': 0.0
+                    })
+            
+            # 按相似度分数排序
+            results.sort(key=lambda x: x['score'], reverse=True)
             
             return results
             
@@ -3635,6 +3967,79 @@ class RAGTools:
             print(f"创建对话链失败: {str(e)}")
             traceback.print_exc()
             return None
+
+    def semantic_search_fallback(self, query, doc_id, top_k=5):
+        """备用语义搜索方法，直接使用Chroma API"""
+        try:
+            # 获取向量存储
+            from chromadb import PersistentClient
+            import numpy as np
+            
+            # 创建Chroma客户端
+            chroma_client = PersistentClient(path=self.persist_directory)
+            collection_name = f"doc_{doc_id}"
+            
+            # 检查集合是否存在
+            try:
+                # 尝试获取集合
+                # 兼容不同版本的ChromaDB API
+                try:
+                    collections = chroma_client.list_collections()
+                    collection_names = collections if isinstance(collections, list) and isinstance(collections[0], str) else [col.name for col in collections]
+                    
+                    if collection_name not in collection_names:
+                        print(f"集合 {collection_name} 不存在")
+                        return []
+                        
+                    collection = chroma_client.get_collection(name=collection_name)
+                except Exception as e:
+                    print(f"获取集合时出错: {str(e)}")
+                    return []
+                
+                # 嵌入查询
+                query_embedding = self.embeddings.embed_query(query)
+                
+                # 直接使用底层API进行查询
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k
+                )
+                
+                # 处理结果
+                documents = []
+                if results and 'documents' in results and len(results['documents']) > 0:
+                    documents = results['documents'][0]  # 第一个查询的结果
+                    metadatas = results.get('metadatas', [[{}] * len(documents)])[0]
+                    distances = results.get('distances', [[1.0] * len(documents)])[0]
+                    
+                    # 转换距离为相似度分数 (1 - 距离)
+                    scores = [1.0 - float(dist) for dist in distances]
+                    
+                    formatted_results = []
+                    for i, (doc, metadata, score) in enumerate(zip(documents, metadatas, scores)):
+                        formatted_results.append({
+                            'text': doc,
+                            'metadata': metadata or {},
+                            'score': score
+                        })
+                        print(f"文档 {i+1}: 相似度分数 = {score:.4f}")
+                    
+                    # 按相似度分数排序
+                    formatted_results.sort(key=lambda x: x['score'], reverse=True)
+                    return formatted_results
+                else:
+                    print("查询未返回文档")
+                    return []
+                    
+            except Exception as e:
+                print(f"Chrome API查询出错: {str(e)}")
+                traceback.print_exc()
+                return []
+                
+        except Exception as e:
+            print(f"备用语义搜索失败: {str(e)}")
+            traceback.print_exc()
+            return []
 
 # 创建RAG工具实例
 rag_tools = RAGTools()
@@ -3837,12 +4242,406 @@ def process_response(response: str, target_word_count: int) -> tuple:
     
     return keywords, summary_text
 
+# 初始化 RAGTools
+rag_tools = None
+
+# 将在应用启动后初始化
+def init_rag_tools():
+    global rag_tools
+    try:
+        from langchain_community.embeddings import OllamaEmbeddings
+        from langchain_community.vectorstores import Chroma
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from langchain_community.llms import Ollama
+        from langchain.chains import RetrievalQA, ConversationalRetrievalChain
+        from langchain.prompts import PromptTemplate
+        from langchain.memory import ConversationBufferMemory
+        from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+        
+        # 初始化全局RAGTools实例
+        rag_tools = RAGTools()
+        print("RAGTools 初始化成功")
+    except Exception as e:
+        print(f"RAGTools 初始化失败: {str(e)}")
+        traceback.print_exc()
+
+@app.route('/test_search')
+def test_search():
+    """测试搜索功能的路由"""
+    try:
+        # 使用硬编码的参数进行搜索
+        query = "图书"
+        min_score_threshold = 0.15
+        max_results = 20
+        
+        print(f"\n=== 测试搜索接口 关键词: {query} ===")
+        print(f"筛选阈值: {min_score_threshold}, 最大结果数: {max_results}")
+        
+        # 检查RAGTools是否已初始化
+        global rag_tools
+        if rag_tools is None:
+            print("RAGTools尚未初始化，正在尝试初始化...")
+            init_rag_tools()
+            if rag_tools is None:
+                return f"<h1>测试失败</h1><p>RAGTools初始化失败</p>"
+        
+        # 检查 Ollama 服务是否可用
+        try:
+            embeddings = get_embeddings_model()
+            # 生成查询向量
+            query_vector = embeddings.embed_query(query)
+        except Exception as e:
+            error_msg = f"Ollama 服务不可用: {str(e)}"
+            print(error_msg)
+            return f"<h1>测试失败</h1><p>{error_msg}</p>"
+        
+        # 获取所有有向量存储的文档
+        summaries = DocumentSummary.query.filter(
+            DocumentSummary.has_vector_store == True
+        ).all()
+        
+        if not summaries:
+            # 尝试使用旧方法获取文档
+            summaries = DocumentSummary.query.filter(
+                db.and_(
+                    DocumentSummary.content_vectors.is_not(None),
+                    DocumentSummary.summary_vectors.is_not(None)
+                )
+            ).all()
+        
+        document_count = len(summaries)
+        print(f"找到 {document_count} 个带向量的文档")
+        
+        if document_count == 0:
+            return f"<h1>测试失败</h1><p>未找到任何带向量的文档</p>"
+        
+        results = []
+        relevant_count = 0
+        all_scores = []
+        
+        for summary in summaries:
+            try:
+                doc_id = summary.id
+                
+                # 使用混合语义搜索获取结果
+                print(f"对文档ID: {doc_id} ({summary.file_name}) 执行混合语义搜索")
+                search_results = []
+                
+                # 优先使用RAGTools进行搜索
+                if summary.has_vector_store and summary.chroma_collection:
+                    try:
+                        # 使用RAGTools进行混合语义搜索
+                        search_results = rag_tools.semantic_search(query, doc_id, top_k=5)
+                        
+                        # 添加源信息
+                        for result in search_results:
+                            source = result.get('metadata', {}).get('source', 'content')
+                            # 应用权重 (内容0.7，摘要0.3)，增加内容权重
+                            result['score'] = result.get('score', 0) * (0.7 if source == 'content' else 0.3)
+                            
+                    except Exception as e:
+                        print(f"RAGTools搜索失败: {str(e)}，尝试使用传统方法")
+                        search_results = []
+                
+                # 如果RAGTools搜索失败或没有结果，尝试传统方法
+                if not search_results and summary.content_vectors:
+                    # 从数据库加载向量数据
+                    try:
+                        content_vectors = pickle.loads(summary.content_vectors)
+                        summary_vectors = pickle.loads(summary.summary_vectors) if summary.summary_vectors else []
+                        
+                        # 计算最大相似度
+                        max_similarity = 0
+                        best_match_text = ""
+                        best_match_source = "content"
+                        
+                        # 检查正文向量
+                        for item in content_vectors:
+                            try:
+                                similarity = cosine_similarity(
+                                    [query_vector],
+                                    [item['vector']]
+                                )[0][0]
+                                if similarity > max_similarity:
+                                    max_similarity = similarity
+                                    best_match_text = item['text']
+                                    best_match_source = "content"
+                            except Exception as e:
+                                print(f"计算正文向量相似度时出错: {str(e)}")
+                                continue
+                        
+                        # 检查摘要向量
+                        for item in summary_vectors:
+                            try:
+                                similarity = cosine_similarity(
+                                    [query_vector],
+                                    [item['vector']]
+                                )[0][0] * 0.7  # 调整摘要权重为0.7
+                                if similarity > max_similarity:
+                                    max_similarity = similarity
+                                    best_match_text = item['text']
+                                    best_match_source = "summary"
+                            except Exception as e:
+                                print(f"计算摘要向量相似度时出错: {str(e)}")
+                                continue
+                        
+                        # 创建单个结果
+                        if max_similarity > 0:
+                            search_results = [{
+                                'text': best_match_text,
+                                'score': float(max_similarity),
+                                'metadata': {
+                                    'source': best_match_source,
+                                    'doc_id': doc_id
+                                }
+                            }]
+                    except Exception as e:
+                        print(f"传统向量搜索失败: {str(e)}")
+                        continue
+                
+                # 获取最佳匹配结果分数
+                best_score = 0
+                if search_results:
+                    best_score = max([result.get('score', 0) for result in search_results])
+                    all_scores.append(best_score)
+                
+                print(f"文档ID {doc_id} 最佳相关度分数: {best_score:.4f}")
+                
+                # 检查是否有足够相关的结果，使用更低的阈值
+                has_relevant_match = any(result.get('score', 0) > min_score_threshold for result in search_results)
+                
+                if has_relevant_match:
+                    relevant_count += 1
+                    # 获取最佳匹配文本
+                    best_result = max(search_results, key=lambda x: x.get('score', 0)) if search_results else None
+                    best_match_text = best_result.get('text', '') if best_result else ''
+                    best_match_score = best_result.get('score', 0) if best_result else 0
+                    
+                    # 使用原始文件名作为显示名称
+                    display_name = summary.original_filename or summary.display_filename or summary.file_name
+                    
+                    # 提取匹配文本的摘录，用于前端展示
+                    match_excerpt = best_match_text
+                    if len(match_excerpt) > 100:
+                        # 如果文本太长，截取前100个字符并添加省略号
+                        match_excerpt = match_excerpt[:100] + "..."
+                    
+                    # 保存结果
+                    results.append({
+                        'id': summary.id,
+                        'file_name': display_name,
+                        'score': float(best_match_score),
+                        'match_excerpt': match_excerpt,
+                        'source': best_result.get('metadata', {}).get('source', 'content')
+                    })
+            
+            except Exception as e:
+                print(f"处理文档 {summary.id} 时出错: {str(e)}")
+                continue
+        
+        # 按相关度排序（分数越高越相关）
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 限制返回结果数量
+        if max_results > 0 and len(results) > max_results:
+            results = results[:max_results]
+        
+        print(f"共找到 {relevant_count} 个相关文档, 返回 {len(results)} 条结果")
+        
+        # 计算统计信息
+        avg_score = sum(all_scores) / len(all_scores) if all_scores else 0
+        max_score = max(all_scores) if all_scores else 0
+        min_score = min(all_scores) if all_scores else 0
+        
+        # 生成HTML结果
+        result_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>搜索测试结果</title>
+            <meta charset="UTF-8">
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                h1 {{ color: #4A90E2; }}
+                .stats {{ margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 5px; }}
+                .result {{ margin: 10px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }}
+                .high-score {{ border-left: 5px solid #28a745; }}
+                .score {{ font-weight: bold; }}
+                .high {{ color: #28a745; }}
+                .medium {{ color: #fd7e14; }}
+                .low {{ color: #dc3545; }}
+            </style>
+        </head>
+        <body>
+            <h1>搜索测试结果</h1>
+            <div class="stats">
+                <p>搜索关键词: <strong>{query}</strong></p>
+                <p>阈值设置: <strong>{min_score_threshold}</strong></p>
+                <p>文档总数: <strong>{document_count}</strong></p>
+                <p>相关文档数: <strong>{relevant_count}</strong></p>
+                <p>返回结果数: <strong>{len(results)}</strong></p>
+                <p>平均相关度分数: <strong>{avg_score:.4f}</strong></p>
+                <p>最高分数: <strong>{max_score:.4f}</strong></p>
+                <p>最低分数: <strong>{min_score:.4f}</strong></p>
+            </div>
+            <h2>搜索结果</h2>
+        """
+        
+        for result in results:
+            score = result['score']
+            score_class = "high" if score >= 0.6 else "medium" if score >= 0.3 else "low"
+            result_html += f"""
+            <div class="result {'high-score' if score >= 0.6 else ''}">
+                <h3>{result['file_name']} (ID: {result['id']})</h3>
+                <p>相关度: <span class="score {score_class}">{score:.4f}</span></p>
+                <p>匹配源: {result['source']}</p>
+                <p>匹配文本: {result['match_excerpt']}</p>
+            </div>
+            """
+        
+        result_html += """
+        </body>
+        </html>
+        """
+        
+        return result_html
+    
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        return f"""
+        <h1>测试失败</h1>
+        <p>{str(e)}</p>
+        <pre>{error_trace}</pre>
+        """
+
+@app.route('/test_vector_search')
+def test_vector_search():
+    """测试向量搜索功能的专用路由"""
+    try:
+        # 获取查询参数
+        query = request.args.get('query', '图书')
+        doc_id = request.args.get('doc_id')
+        top_k = int(request.args.get('top_k', '5'))
+        
+        print(f"\n=== 测试向量搜索 ===")
+        print(f"查询: '{query}'")
+        print(f"文档ID: {doc_id}")
+        print(f"Top K: {top_k}")
+        
+        # 检查参数
+        if not query:
+            return jsonify({
+                'success': False,
+                'error': '查询参数不能为空'
+            }), 400
+            
+        if not doc_id:
+            return jsonify({
+                'success': False,
+                'error': '文档ID参数不能为空'
+            }), 400
+            
+        try:
+            doc_id = int(doc_id)
+        except ValueError:
+            return jsonify({
+                'success': False,
+                'error': '文档ID必须是整数'
+            }), 400
+            
+        # 检查RAGTools是否已初始化
+        global rag_tools
+        if rag_tools is None:
+            print("RAGTools尚未初始化，正在尝试初始化...")
+            init_rag_tools()
+            if rag_tools is None:
+                return jsonify({
+                    'success': False,
+                    'error': 'RAGTools初始化失败'
+                }), 500
+        
+        # 检查文档是否存在及是否有向量存储
+        doc = DocumentSummary.query.get(doc_id)
+        if not doc:
+            return jsonify({
+                'success': False,
+                'error': f'未找到ID为{doc_id}的文档'
+            }), 404
+            
+        if not doc.has_vector_store or not doc.chroma_collection:
+            return jsonify({
+                'success': False,
+                'error': f'文档ID {doc_id} 没有向量存储'
+            }), 400
+            
+        # 执行向量搜索
+        print(f"开始执行向量搜索...")
+        start_time = time.time()
+        
+        try:
+            # 使用RAGTools进行向量搜索
+            results = rag_tools.semantic_search(query, doc_id, top_k=top_k)
+            
+            # 如果主方法失败，尝试使用备用方法
+            if not results:
+                print("主要搜索方法未返回结果，尝试使用备用方法...")
+                results = rag_tools.semantic_search_fallback(query, doc_id, top_k=top_k)
+                
+            search_time = time.time() - start_time
+            
+            # 检查结果
+            if not results:
+                return jsonify({
+                    'success': True,
+                    'results': [],
+                    'message': '未找到相关结果',
+                    'search_time': search_time
+                })
+                
+            # 处理结果
+            processed_results = []
+            for i, result in enumerate(results):
+                processed_results.append({
+                    'index': i,
+                    'score': result.get('score', 0),
+                    'text': result.get('text', '')[:200] + '...' if len(result.get('text', '')) > 200 else result.get('text', ''),
+                    'metadata': result.get('metadata', {})
+                })
+            
+            # 返回结果
+            return jsonify({
+                'success': True,
+                'query': query,
+                'doc_id': doc_id,
+                'file_name': doc.file_name,
+                'result_count': len(results),
+                'search_time': search_time,
+                'results': processed_results
+            })
+            
+        except Exception as e:
+            print(f"向量搜索过程中出错: {str(e)}")
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'error': f'向量搜索失败: {str(e)}'
+            }), 500
+            
+    except Exception as e:
+        print(f"测试向量搜索路由出错: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 if __name__ == '__main__':
     with app.app_context():
         # 只在表不存在时创建表
         db.create_all()
-        # 初始化管理员账户
+        # 初始化管理员账户和RAGTools
         init_admin()
-        print("数据库初始化完成")
+        init_rag_tools()
+        print("数据库和应用组件初始化完成")
     # 修改端口为5001或8080等非常用端口，并明确指定主机地址
     app.run(debug=True, host='127.0.0.1', port=8080)

@@ -66,6 +66,7 @@ from langchain_chroma import Chroma
 from chromadb import PersistentClient
 import urllib.parse
 import unicodedata
+import sys
 
 app = Flask(__name__, static_folder='static')
 UPLOAD_FOLDER = 'uploads'
@@ -1473,6 +1474,64 @@ def get_summaries():
             # 检查文件是否存在
             has_file = bool(summary.file_content) or (hasattr(summary, 'is_chunked') and summary.is_chunked)
             
+            # 处理关键词 - 确保始终返回数组格式
+            keywords_array = []
+            if summary.keywords:
+                try:
+                    if isinstance(summary.keywords, str) and summary.keywords.strip():
+                        # 确保分隔符处理正确
+                        if '|' in summary.keywords:
+                            keywords_array = [k.strip() for k in summary.keywords.split('|') if k.strip()]
+                        else:
+                            # 如果没有分隔符，尝试作为单个关键词处理
+                            keywords_array = [summary.keywords.strip()]
+                        print(f"摘要 ID {summary.id}: 从字符串转换关键词: {summary.keywords} -> {keywords_array}")
+                    elif isinstance(summary.keywords, list):
+                        keywords_array = [k for k in summary.keywords if k]
+                        print(f"摘要 ID {summary.id}: 关键词已经是数组格式: {keywords_array}")
+                    else:
+                        print(f"摘要 ID {summary.id}: 未知关键词格式: {type(summary.keywords)}, 值: {summary.keywords}")
+                        # 尝试强制转换为字符串再处理
+                        try:
+                            if summary.keywords:
+                                str_val = str(summary.keywords)
+                                keywords_array = [str_val.strip()]
+                                print(f"摘要 ID {summary.id}: 强制转换关键词: {str_val}")
+                        except:
+                            print(f"摘要 ID {summary.id}: 强制转换失败")
+                    
+                    # 确保最终结果必须是数组
+                    if not isinstance(keywords_array, list):
+                        print(f"摘要 ID {summary.id}: 最终转换结果非数组，强制转为空数组")
+                        keywords_array = []
+                    
+                    # 打印最终结果进行确认
+                    print(f"摘要 ID {summary.id}: 最终关键词数组: {keywords_array}, 类型: {type(keywords_array)}")
+                    
+                except Exception as ke:
+                    print(f"摘要 ID {summary.id}: 处理关键词时出错: {str(ke)}")
+                    keywords_array = []  # 确保出错时返回空数组
+            else:
+                print(f"摘要 ID {summary.id}: 无关键词数据")
+            
+            # 如果没有关键词数据，使用大模型生成
+            if not keywords_array and summary.summary_text:
+                print(f"摘要 ID {summary.id}: 尝试使用大模型生成关键词")
+                keywords_array = generate_keywords_with_model(summary.summary_text)
+                print(f"摘要 ID {summary.id}: 大模型生成的关键词: {keywords_array}")
+                
+                # 如果成功生成关键词，更新数据库
+                if keywords_array:
+                    try:
+                        # 将关键词数组转换为字符串并保存到数据库
+                        keywords_str = '|'.join(keywords_array)
+                        summary.keywords = keywords_str
+                        db.session.commit()
+                        print(f"摘要 ID {summary.id}: 已将生成的关键词 {keywords_str} 保存到数据库")
+                    except Exception as save_err:
+                        print(f"摘要 ID {summary.id}: 保存关键词到数据库失败: {str(save_err)}")
+                        db.session.rollback()
+            
             # 构建结果数据
             result_data = {
                 'id': summary.id,
@@ -1487,7 +1546,7 @@ def get_summaries():
                 'has_file': has_file,
                 'is_chunked': getattr(summary, 'is_chunked', False),
                 'total_chunks': getattr(summary, 'total_chunks', 0),
-                'keywords': summary.keywords.split('|') if summary.keywords else []
+                'keywords': keywords_array  # 使用处理后的数组
             }
             
             results.append(result_data)
@@ -1527,6 +1586,64 @@ def get_summary_detail(summary_id):
         # 使用原始文件名或显示文件名
         display_name = summary.original_filename or summary.display_filename or summary.file_name
         
+        # 处理关键词 - 确保始终返回数组格式
+        keywords_array = []
+        if summary.keywords:
+            try:
+                if isinstance(summary.keywords, str) and summary.keywords.strip():
+                    # 确保分隔符处理正确
+                    if '|' in summary.keywords:
+                        keywords_array = [k.strip() for k in summary.keywords.split('|') if k.strip()]
+                    else:
+                        # 如果没有分隔符，尝试作为单个关键词处理
+                        keywords_array = [summary.keywords.strip()]
+                    print(f"摘要详情 ID {summary.id}: 从字符串转换关键词: {summary.keywords} -> {keywords_array}")
+                elif isinstance(summary.keywords, list):
+                    keywords_array = [k for k in summary.keywords if k]
+                    print(f"摘要详情 ID {summary.id}: 关键词已经是数组格式: {keywords_array}")
+                else:
+                    print(f"摘要详情 ID {summary.id}: 未知关键词格式: {type(summary.keywords)}, 值: {summary.keywords}")
+                    # 尝试强制转换为字符串再处理
+                    try:
+                        if summary.keywords:
+                            str_val = str(summary.keywords)
+                            keywords_array = [str_val.strip()]
+                            print(f"摘要详情 ID {summary.id}: 强制转换关键词: {str_val}")
+                    except:
+                        print(f"摘要详情 ID {summary.id}: 强制转换失败")
+                
+                # 确保最终结果必须是数组
+                if not isinstance(keywords_array, list):
+                    print(f"摘要详情 ID {summary.id}: 最终转换结果非数组，强制转为空数组")
+                    keywords_array = []
+                
+                # 打印最终结果进行确认
+                print(f"摘要详情 ID {summary.id}: 最终关键词数组: {keywords_array}, 类型: {type(keywords_array)}")
+                
+            except Exception as ke:
+                print(f"摘要详情 ID {summary.id}: 处理关键词时出错: {str(ke)}")
+                keywords_array = []  # 确保出错时返回空数组
+        else:
+            print(f"摘要详情 ID {summary.id}: 无关键词数据")
+        
+        # 如果没有关键词数据，使用大模型生成
+        if not keywords_array and summary.summary_text:
+            print(f"摘要详情 ID {summary.id}: 尝试使用大模型生成关键词")
+            keywords_array = generate_keywords_with_model(summary.summary_text)
+            print(f"摘要详情 ID {summary.id}: 大模型生成的关键词: {keywords_array}")
+            
+            # 如果成功生成关键词，更新数据库
+            if keywords_array:
+                try:
+                    # 将关键词数组转换为字符串并保存到数据库
+                    keywords_str = '|'.join(keywords_array)
+                    summary.keywords = keywords_str
+                    db.session.commit()
+                    print(f"摘要详情 ID {summary.id}: 已将生成的关键词 {keywords_str} 保存到数据库")
+                except Exception as save_err:
+                    print(f"摘要详情 ID {summary.id}: 保存关键词到数据库失败: {str(save_err)}")
+                    db.session.rollback()
+        
         result = {
             'id': summary.id,
             'file_name': display_name,  # 使用正确的文件名
@@ -1535,7 +1652,7 @@ def get_summary_detail(summary_id):
             'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'summary_length': summary.summary_length,
             'target_language': summary.target_language,
-            'keywords': summary.keywords.split('|') if summary.keywords else []  # 添加关键词信息
+            'keywords': keywords_array  # 使用处理后的数组
         }
         return jsonify(result)
         
@@ -3193,6 +3310,7 @@ def ollama_text_stream(input_text, params=None, file_info=None, file_content=Non
         # 选择模型
         model = "huihui_ai/qwen2.5-1m-abliterated"
         
+        
         content_length = len(input_text)
         print(f"输入文本长度: {content_length}")
         
@@ -3891,7 +4009,7 @@ class RAGTools:
 3. 引用相关的上下文内容来支持你的答案
 
 答案："""
-
+    
             QA_CHAIN_PROMPT = PromptTemplate(
                 input_variables=["context", "question"],
                 template=template,
@@ -3923,267 +4041,72 @@ class RAGTools:
             print(f"生成RAG响应失败: {str(e)}")
             traceback.print_exc()
             return None
-            
-    def create_conversational_chain(self, doc_id):
-        """创建对话链"""
-        try:
-            # 获取向量存储
-            collection_name = f"doc_{doc_id}"
-            db = Chroma(
-                persist_directory=self.persist_directory,
-                embedding_function=self.embeddings,
-                collection_name=collection_name
-            )
-            
-            # 创建检索器
-            retriever = db.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": 3}
-            )
-            
-            # 创建LLM
-            llm = Ollama(
-                model="huihui_ai/qwen2.5-1m-abliterated",
-                base_url="http://localhost:11434"
-            )
-            
-            # 创建记忆组件
-            memory = ConversationBufferMemory(
-                memory_key="chat_history",
-                return_messages=True
-            )
-            
-            # 创建对话链
-            chain = ConversationalRetrievalChain.from_llm(
-                llm=llm,
-                retriever=retriever,
-                memory=memory,
-                return_source_documents=True
-            )
-            
-            return chain
-            
-        except Exception as e:
-            print(f"创建对话链失败: {str(e)}")
-            traceback.print_exc()
-            return None
 
-    def semantic_search_fallback(self, query, doc_id, top_k=5):
-        """备用语义搜索方法，直接使用Chroma API"""
-        try:
-            # 获取向量存储
-            from chromadb import PersistentClient
-            import numpy as np
+@app.route('/test_keywords')
+def test_keywords():
+    """测试路由：检查数据库中的关键词格式"""
+    try:
+        # 获取所有摘要记录
+        results = DocumentSummary.query.filter(DocumentSummary.keywords.isnot(None)).limit(10).all()
+        
+        # 收集数据
+        summaries_data = []
+        for summary in results:
+            # 提取原始关键词数据
+            raw_keywords = summary.keywords
             
-            # 创建Chroma客户端
-            chroma_client = PersistentClient(path=self.persist_directory)
-            collection_name = f"doc_{doc_id}"
-            
-            # 检查集合是否存在
-            try:
-                # 尝试获取集合
-                # 兼容不同版本的ChromaDB API
-                try:
-                    collections = chroma_client.list_collections()
-                    collection_names = collections if isinstance(collections, list) and isinstance(collections[0], str) else [col.name for col in collections]
-                    
-                    if collection_name not in collection_names:
-                        print(f"集合 {collection_name} 不存在")
-                        return []
-                        
-                    collection = chroma_client.get_collection(name=collection_name)
-                except Exception as e:
-                    print(f"获取集合时出错: {str(e)}")
-                    return []
-                
-                # 嵌入查询
-                query_embedding = self.embeddings.embed_query(query)
-                
-                # 直接使用底层API进行查询
-                results = collection.query(
-                    query_embeddings=[query_embedding],
-                    n_results=top_k
-                )
-                
-                # 处理结果
-                documents = []
-                if results and 'documents' in results and len(results['documents']) > 0:
-                    documents = results['documents'][0]  # 第一个查询的结果
-                    metadatas = results.get('metadatas', [[{}] * len(documents)])[0]
-                    distances = results.get('distances', [[1.0] * len(documents)])[0]
-                    
-                    # 转换距离为相似度分数 (1 - 距离)
-                    scores = [1.0 - float(dist) for dist in distances]
-                    
-                    formatted_results = []
-                    for i, (doc, metadata, score) in enumerate(zip(documents, metadatas, scores)):
-                        formatted_results.append({
-                            'text': doc,
-                            'metadata': metadata or {},
-                            'score': score
-                        })
-                        print(f"文档 {i+1}: 相似度分数 = {score:.4f}")
-                    
-                    # 按相似度分数排序
-                    formatted_results.sort(key=lambda x: x['score'], reverse=True)
-                    return formatted_results
+            # 处理关键词 - 同get_summaries函数中的逻辑
+            keywords_array = []
+            if raw_keywords:
+                if isinstance(raw_keywords, str) and raw_keywords.strip():
+                    if '|' in raw_keywords:
+                        keywords_array = [k.strip() for k in raw_keywords.split('|') if k.strip()]
+                    else:
+                        keywords_array = [raw_keywords.strip()]
+                elif isinstance(raw_keywords, list):
+                    keywords_array = [k for k in raw_keywords if k]
                 else:
-                    print("查询未返回文档")
-                    return []
-                    
-            except Exception as e:
-                print(f"Chrome API查询出错: {str(e)}")
-                traceback.print_exc()
-                return []
-                
-        except Exception as e:
-            print(f"备用语义搜索失败: {str(e)}")
-            traceback.print_exc()
-            return []
-
-# 创建RAG工具实例
-rag_tools = RAGTools()
-
-@app.route('/chat/<int:doc_id>', methods=['POST'])
-def chat_with_document(doc_id):
-    """与文档进行对话"""
-    try:
-        data = request.get_json()
-        query = data.get('query')
-        chat_history = data.get('chat_history', [])
-        
-        if not query:
-            return jsonify({
-                'success': False,
-                'error': '请输入问题'
-            }), 400
+                    # 尝试强制转换
+                    try:
+                        str_val = str(raw_keywords)
+                        keywords_array = [str_val.strip()]
+                    except:
+                        pass
             
-        # 创建或获取对话链
-        chain = rag_tools.create_conversational_chain(doc_id)
-        if not chain:
-            return jsonify({
-                'success': False,
-                'error': '创建对话链失败'
-            }), 500
-            
-        # 执行对话
-        response = chain({
-            "question": query,
-            "chat_history": chat_history
-        })
+            # 构建结果数据
+            data = {
+                'id': summary.id,
+                'file_name': summary.file_name,
+                'raw_keywords': raw_keywords,
+                'raw_keywords_type': str(type(raw_keywords)),
+                'processed_keywords': keywords_array,
+                'processed_keywords_type': str(type(keywords_array))
+            }
+            summaries_data.append(data)
         
         return jsonify({
-            'success': True,
-            'answer': response['answer'],
-            'source_documents': [
-                {
-                    'content': doc.page_content,
-                    'metadata': doc.metadata
-                } for doc in response.get('source_documents', [])
-            ],
-            'chat_history': chat_history + [(query, response['answer'])]
+            'count': len(summaries_data),
+            'summaries': summaries_data,
+            'debug_info': {
+                'python_version': sys.version,
+                'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'error': None
+            }
         })
         
     except Exception as e:
-        print(f"文档对话错误: {str(e)}")
-        traceback.print_exc()
         return jsonify({
-            'success': False,
-            'error': str(e)
+            'error': str(e),
+            'debug_info': {
+                'python_version': sys.version,
+                'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
         }), 500
 
-def clean_orphaned_vector_stores():
-    """清理不再有对应数据库记录的向量存储"""
-    try:
-        print("\n=== 开始清理孤立的向量存储 ===")
-        
-        # 获取数据库中所有有向量存储的文档ID
-        docs_with_vectors = DocumentSummary.query.filter_by(has_vector_store=True).all()
-        valid_collection_names = set([f"doc_{doc.id}" for doc in docs_with_vectors])
-        print(f"数据库中记录的有效向量存储集合数: {len(valid_collection_names)}")
-        
-        # 获取磁盘上的所有集合
-        try:
-            from chromadb import PersistentClient
-            persist_directory = "chroma_db"
-            
-            # 确保目录存在
-            if not os.path.exists(persist_directory):
-                print(f"向量存储目录不存在: {persist_directory}")
-                return {
-                    'success': True,
-                    'message': '向量存储目录不存在，无需清理',
-                    'removed_collections': []
-                }
-            
-            chroma_client = PersistentClient(path=persist_directory)
-            all_collections = chroma_client.list_collections()
-            
-            # 兼容ChromaDB不同版本的API
-            try:
-                # ChromaDB v0.6.0+版本，list_collections直接返回集合名称列表
-                all_collection_names = set(all_collections)
-                print(f"ChromaDB v0.6.0+: 获取到 {len(all_collection_names)} 个集合名称")
-            except Exception:
-                try:
-                    # 如果不是直接列表，则尝试获取name属性（旧版本API）
-                    all_collection_names = set([col.name for col in all_collections])
-                    print(f"旧版ChromaDB: 获取到 {len(all_collection_names)} 个集合名称")
-                except Exception as e:
-                    print(f"无法获取集合名称: {str(e)}")
-                    all_collection_names = set()
-                    
-            print(f"磁盘上的向量存储集合数: {len(all_collection_names)}")
-            
-            # 找出孤立的集合（磁盘上有但数据库中没有记录的）
-            orphaned_collections = all_collection_names - valid_collection_names
-            print(f"发现 {len(orphaned_collections)} 个孤立的向量存储集合")
-            
-            # 删除孤立的集合
-            removed_collections = []
-            for collection_name in orphaned_collections:
-                try:
-                    print(f"删除孤立集合: {collection_name}")
-                    chroma_client.delete_collection(collection_name)
-                    removed_collections.append(collection_name)
-                except Exception as e:
-                    print(f"删除集合 {collection_name} 时出错: {str(e)}")
-            
-            print(f"成功删除 {len(removed_collections)} 个孤立的向量存储集合")
-            return {
-                'success': True,
-                'message': f'成功删除 {len(removed_collections)} 个孤立的向量存储集合',
-                'removed_collections': list(removed_collections)
-            }
-            
-        except Exception as e:
-            print(f"获取或删除向量存储集合时出错: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
-    
-    except Exception as e:
-        print(f"清理孤立向量存储时出错: {str(e)}")
-        traceback.print_exc()
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-@app.route('/admin/clean_vector_stores', methods=['POST'])
-def handle_clean_vector_stores():
-    """API端点：清理孤立的向量存储"""
-    try:
-        result = clean_orphaned_vector_stores()
-        return jsonify(result)
-    except Exception as e:
-        print(f"清理向量存储API错误: {str(e)}")
-        traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+@app.route('/debug_keywords')
+def debug_keywords_page():
+    """显示关键词调试页面"""
+    return send_from_directory('.', 'debug_data.html')
 
 def process_response(response: str, target_word_count: int) -> tuple:
     """处理模型的回复，提取关键词和摘要内容"""
@@ -4219,14 +4142,14 @@ def process_response(response: str, target_word_count: int) -> tuple:
         summary_text = summary_match.group(1).strip()
     else:
         print("没有找到明确的[SUMMARY]标记")
-        # 如果找到了关键词但没有摘要标记，尝试使用关键词后的所有内容作为摘要
+        # The case where [KEYWORDS] exists but [SUMMARY] doesn't
         if keywords_match:
             remaining_text = response[keywords_match.end():].strip()
             if remaining_text:
                 print("使用关键词后的内容作为摘要")
                 summary_text = remaining_text
         
-        # 如果上述方法都失败，使用整个响应作为摘要
+        # If no valid summary is found, use the entire response
         if not summary_text:
             print("使用完整响应作为摘要")
             summary_text = response.strip()
@@ -4242,6 +4165,119 @@ def process_response(response: str, target_word_count: int) -> tuple:
     
     return keywords, summary_text
 
+def generate_keywords_with_model(text):
+    """使用大模型结合Chain-of-Thought技术为文本生成高质量关键词"""
+    try:
+        if not text:
+            print("无法生成关键词：输入文本为空")
+            return ["无内容", "系统生成", "自动标记", "默认关键词"]
+            
+        print(f"正在使用CoT技术生成高质量关键词，文本长度: {len(text)}")
+        
+        # 创建Ollama客户端
+        client = Client(host='http://localhost:11434')
+        
+        # 限制文本长度，兼顾效率和准确性
+        text_sample = text[:3000] if len(text) > 3000 else text
+        
+        # 使用更明确的提示词，确保只返回关键词，避免生成额外解释
+        new_keyword_prompt = f"""请分析下面的文本，提取4-6个最能代表文本核心内容的关键词：
+
+{text_sample}
+
+请注意：
+1. 每个关键词2-4个汉字
+2. 只需输出关键词，用竖线|分隔
+3. 不要输出任何解释、分析或其他内容
+4. 不要输出序号
+5. 示例格式：关键词1|关键词2|关键词3|关键词4
+
+直接输出关键词："""
+        
+        # 调用模型生成关键词，降低温度确保更精确的输出
+        keyword_response = client.generate(
+            model='huihui_ai/qwen2.5-1m-abliterated:latest',
+            prompt=new_keyword_prompt,
+            stream=False,
+            options={'temperature': 0.2, 'max_tokens': 100}  # 限制输出长度
+        )
+        
+        if not keyword_response or 'response' not in keyword_response:
+            print("关键词API响应为空或格式错误")
+            return ["文档摘要", "系统生成", "自动标记", "智能处理"]
+        
+        # 提取响应
+        response_text = keyword_response['response'].strip()
+        print(f"模型生成的原始关键词响应: {response_text}")
+        
+        # 严格清理和提取关键词
+        # 1. 只保留文本中第一行包含分隔符的内容
+        first_line_with_separator = None
+        for line in response_text.split('\n'):
+            if '|' in line:
+                first_line_with_separator = line.strip()
+                break
+        
+        if first_line_with_separator:
+            # 使用第一行包含分隔符的内容
+            keywords_text = first_line_with_separator
+        else:
+            # 如果没有包含分隔符的行，使用第一行或整个响应
+            keywords_text = response_text.split('\n')[0] if '\n' in response_text else response_text
+        
+        # 2. 进一步清理，只保留中文和分隔符
+        keywords_text = re.sub(r'[^\u4e00-\u9fff|]', '', keywords_text)
+        
+        # 3. 拆分关键词
+        if '|' in keywords_text:
+            raw_keywords = [k.strip() for k in keywords_text.split('|') if k.strip()]
+        else:
+            # 如果没有分隔符，尝试按2-4个字符分词
+            raw_keywords = []
+            current = ""
+            for char in keywords_text:
+                current += char
+                if len(current) >= 4:  # 最多4个字符
+                    raw_keywords.append(current)
+                    current = ""
+            if current:  # 添加最后一个
+                raw_keywords.append(current)
+        
+        # 4. 严格验证每个关键词
+        valid_keywords = []
+        for keyword in raw_keywords:
+            # 只接受2-4个字符的关键词
+            if 2 <= len(keyword) <= 4 and re.search(r'[\u4e00-\u9fff]', keyword):
+                valid_keywords.append(keyword)
+            
+            # 达到6个关键词上限就停止
+            if len(valid_keywords) >= 6:
+                break
+        
+        # 5. 确保至少有一些关键词
+        if not valid_keywords or len(valid_keywords) < 2:
+            # 如果没有有效关键词或太少，使用一些简单的分词
+            if len(keywords_text) > 4:
+                segments = []
+                for i in range(0, len(keywords_text), 3):
+                    segment = keywords_text[i:i+3]
+                    if len(segment) >= 2:
+                        segments.append(segment)
+                valid_keywords = segments[:6]  # 最多6个关键词
+        
+        # 6. 确保最终结果不会太长，以防溢出数据库字段
+        final_keywords = valid_keywords[:6]  # 再次确保最多6个
+        
+        # 7. 打印和返回结果
+        print(f"最终清理后的关键词: {final_keywords}")
+        return final_keywords if final_keywords else ["文档摘要", "智能处理", "内容分析", "自动标记"]
+            
+    except Exception as e:
+        print(f"生成关键词失败: {str(e)}")
+        traceback.print_exc()
+        # 返回默认关键词
+        return ["文档摘要", "系统生成", "自动标记", "智能处理"]
+
 # 初始化 RAGTools
 rag_tools = None
 
@@ -4249,15 +4285,6 @@ rag_tools = None
 def init_rag_tools():
     global rag_tools
     try:
-        from langchain_community.embeddings import OllamaEmbeddings
-        from langchain_community.vectorstores import Chroma
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
-        from langchain_community.llms import Ollama
-        from langchain.chains import RetrievalQA, ConversationalRetrievalChain
-        from langchain.prompts import PromptTemplate
-        from langchain.memory import ConversationBufferMemory
-        from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-        
         # 初始化全局RAGTools实例
         rag_tools = RAGTools()
         print("RAGTools 初始化成功")
@@ -4265,375 +4292,120 @@ def init_rag_tools():
         print(f"RAGTools 初始化失败: {str(e)}")
         traceback.print_exc()
 
-@app.route('/test_search')
-def test_search():
-    """测试搜索功能的路由"""
+@app.route('/search')
+def search_redirect():
+    """兼容旧版前端的搜索路由，将GET请求转发到POST /api/search"""
     try:
-        # 使用硬编码的参数进行搜索
-        query = "图书"
-        min_score_threshold = 0.15
-        max_results = 20
+        query = request.args.get('q', '')
+        if not query:
+            return jsonify([])
+            
+        print(f"\n=== 旧版搜索路由接收到请求: '{query}' ===")
         
-        print(f"\n=== 测试搜索接口 关键词: {query} ===")
-        print(f"筛选阈值: {min_score_threshold}, 最大结果数: {max_results}")
+        # 获取所有文档
+        summaries = DocumentSummary.query.all()
         
-        # 检查RAGTools是否已初始化
-        global rag_tools
-        if rag_tools is None:
-            print("RAGTools尚未初始化，正在尝试初始化...")
-            init_rag_tools()
-            if rag_tools is None:
-                return f"<h1>测试失败</h1><p>RAGTools初始化失败</p>"
-        
-        # 检查 Ollama 服务是否可用
-        try:
-            embeddings = get_embeddings_model()
-            # 生成查询向量
-            query_vector = embeddings.embed_query(query)
-        except Exception as e:
-            error_msg = f"Ollama 服务不可用: {str(e)}"
-            print(error_msg)
-            return f"<h1>测试失败</h1><p>{error_msg}</p>"
-        
-        # 获取所有有向量存储的文档
-        summaries = DocumentSummary.query.filter(
-            DocumentSummary.has_vector_store == True
-        ).all()
-        
-        if not summaries:
-            # 尝试使用旧方法获取文档
-            summaries = DocumentSummary.query.filter(
-                db.and_(
-                    DocumentSummary.content_vectors.is_not(None),
-                    DocumentSummary.summary_vectors.is_not(None)
-                )
-            ).all()
-        
-        document_count = len(summaries)
-        print(f"找到 {document_count} 个带向量的文档")
-        
-        if document_count == 0:
-            return f"<h1>测试失败</h1><p>未找到任何带向量的文档</p>"
+        # 将查询转换为小写，便于文本匹配
+        query_lower = query.lower()
         
         results = []
-        relevant_count = 0
-        all_scores = []
         
+        # 遍历所有文档
         for summary in summaries:
             try:
                 doc_id = summary.id
+                file_name = summary.file_name or ""
+                summary_text = summary.summary_text or ""
+                keywords = summary.keywords or ""
                 
-                # 使用混合语义搜索获取结果
-                print(f"对文档ID: {doc_id} ({summary.file_name}) 执行混合语义搜索")
-                search_results = []
+                # 初始化变量
+                found_match = False
+                best_match_text = ""
+                best_match_score = 0
+                best_match_source = ""
+                is_text_match = False
                 
-                # 优先使用RAGTools进行搜索
-                if summary.has_vector_store and summary.chroma_collection:
-                    try:
-                        # 使用RAGTools进行混合语义搜索
-                        search_results = rag_tools.semantic_search(query, doc_id, top_k=5)
-                        
-                        # 添加源信息
-                        for result in search_results:
-                            source = result.get('metadata', {}).get('source', 'content')
-                            # 应用权重 (内容0.7，摘要0.3)，增加内容权重
-                            result['score'] = result.get('score', 0) * (0.7 if source == 'content' else 0.3)
-                            
-                    except Exception as e:
-                        print(f"RAGTools搜索失败: {str(e)}，尝试使用传统方法")
-                        search_results = []
-                
-                # 如果RAGTools搜索失败或没有结果，尝试传统方法
-                if not search_results and summary.content_vectors:
-                    # 从数据库加载向量数据
-                    try:
-                        content_vectors = pickle.loads(summary.content_vectors)
-                        summary_vectors = pickle.loads(summary.summary_vectors) if summary.summary_vectors else []
-                        
-                        # 计算最大相似度
-                        max_similarity = 0
-                        best_match_text = ""
-                        best_match_source = "content"
-                        
-                        # 检查正文向量
-                        for item in content_vectors:
-                            try:
-                                similarity = cosine_similarity(
-                                    [query_vector],
-                                    [item['vector']]
-                                )[0][0]
-                                if similarity > max_similarity:
-                                    max_similarity = similarity
-                                    best_match_text = item['text']
-                                    best_match_source = "content"
-                            except Exception as e:
-                                print(f"计算正文向量相似度时出错: {str(e)}")
-                                continue
-                        
-                        # 检查摘要向量
-                        for item in summary_vectors:
-                            try:
-                                similarity = cosine_similarity(
-                                    [query_vector],
-                                    [item['vector']]
-                                )[0][0] * 0.7  # 调整摘要权重为0.7
-                                if similarity > max_similarity:
-                                    max_similarity = similarity
-                                    best_match_text = item['text']
-                                    best_match_source = "summary"
-                            except Exception as e:
-                                print(f"计算摘要向量相似度时出错: {str(e)}")
-                                continue
-                        
-                        # 创建单个结果
-                        if max_similarity > 0:
-                            search_results = [{
-                                'text': best_match_text,
-                                'score': float(max_similarity),
-                                'metadata': {
-                                    'source': best_match_source,
-                                    'doc_id': doc_id
-                                }
-                            }]
-                    except Exception as e:
-                        print(f"传统向量搜索失败: {str(e)}")
-                        continue
-                
-                # 获取最佳匹配结果分数
-                best_score = 0
-                if search_results:
-                    best_score = max([result.get('score', 0) for result in search_results])
-                    all_scores.append(best_score)
-                
-                print(f"文档ID {doc_id} 最佳相关度分数: {best_score:.4f}")
-                
-                # 检查是否有足够相关的结果，使用更低的阈值
-                has_relevant_match = any(result.get('score', 0) > min_score_threshold for result in search_results)
-                
-                if has_relevant_match:
-                    relevant_count += 1
-                    # 获取最佳匹配文本
-                    best_result = max(search_results, key=lambda x: x.get('score', 0)) if search_results else None
-                    best_match_text = best_result.get('text', '') if best_result else ''
-                    best_match_score = best_result.get('score', 0) if best_result else 0
+                # 检查文件名匹配
+                if file_name and query_lower in file_name.lower():
+                    found_match = True
+                    is_text_match = True
+                    best_match_text = file_name
+                    best_match_score = 0.8
+                    best_match_source = "file_name"
                     
+                # 检查摘要文本匹配
+                elif summary_text and query_lower in summary_text.lower():
+                    found_match = True
+                    is_text_match = True
+                    best_match_text = summary_text[:200] + "..." if len(summary_text) > 200 else summary_text
+                    best_match_score = 0.6
+                    best_match_source = "summary_text"
+                    
+                # 检查关键词匹配
+                elif keywords:
+                    # 转换关键词格式
+                    if isinstance(keywords, str):
+                        keywords_list = keywords.split('|')
+                    else:
+                        keywords_list = keywords
+
+                    keywords_list = [k.strip().lower() for k in keywords_list if k.strip()]
+                    
+                    # 简化匹配逻辑
+                    if any(query_lower in k or k in query_lower for k in keywords_list):
+                        found_match = True
+                        is_text_match = True
+                        best_match_text = query
+                        best_match_score = 0.7
+                        best_match_source = "keywords"
+                
+                # 如果找到了匹配，添加到结果列表
+                if found_match:
                     # 使用原始文件名作为显示名称
                     display_name = summary.original_filename or summary.display_filename or summary.file_name
                     
-                    # 提取匹配文本的摘录，用于前端展示
+                    # 提取匹配文本摘录
                     match_excerpt = best_match_text
-                    if len(match_excerpt) > 100:
-                        # 如果文本太长，截取前100个字符并添加省略号
-                        match_excerpt = match_excerpt[:100] + "..."
+                    if len(match_excerpt) > 200:
+                        match_excerpt = match_excerpt[:200] + "..."
                     
-                    # 保存结果
+                    # 处理关键词
+                    keywords_array = []
+                    if summary.keywords:
+                        if isinstance(summary.keywords, str):
+                            keywords_array = [k.strip() for k in summary.keywords.split('|') if k.strip()]
+                        elif isinstance(summary.keywords, list):
+                            keywords_array = summary.keywords
+                    
                     results.append({
                         'id': summary.id,
                         'file_name': display_name,
-                        'score': float(best_match_score),
+                        'summary_text': summary.summary_text,
                         'match_excerpt': match_excerpt,
-                        'source': best_result.get('metadata', {}).get('source', 'content')
+                        'created_at': summary.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        'target_language': summary.target_language,
+                        'summary_length': summary.summary_length,
+                        'relevance_score': float(best_match_score),
+                        'keywords': keywords_array,
+                        'match_source': best_match_source,
+                        'is_text_match': is_text_match
                     })
             
             except Exception as e:
                 print(f"处理文档 {summary.id} 时出错: {str(e)}")
                 continue
         
-        # 按相关度排序（分数越高越相关）
-        results.sort(key=lambda x: x['score'], reverse=True)
+        # 按相关度排序
+        results.sort(key=lambda x: x['relevance_score'], reverse=True)
         
-        # 限制返回结果数量
-        if max_results > 0 and len(results) > max_results:
-            results = results[:max_results]
+        print(f"返回 {len(results)} 条结果")
         
-        print(f"共找到 {relevant_count} 个相关文档, 返回 {len(results)} 条结果")
+        return jsonify(results)
         
-        # 计算统计信息
-        avg_score = sum(all_scores) / len(all_scores) if all_scores else 0
-        max_score = max(all_scores) if all_scores else 0
-        min_score = min(all_scores) if all_scores else 0
-        
-        # 生成HTML结果
-        result_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>搜索测试结果</title>
-            <meta charset="UTF-8">
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                h1 {{ color: #4A90E2; }}
-                .stats {{ margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 5px; }}
-                .result {{ margin: 10px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }}
-                .high-score {{ border-left: 5px solid #28a745; }}
-                .score {{ font-weight: bold; }}
-                .high {{ color: #28a745; }}
-                .medium {{ color: #fd7e14; }}
-                .low {{ color: #dc3545; }}
-            </style>
-        </head>
-        <body>
-            <h1>搜索测试结果</h1>
-            <div class="stats">
-                <p>搜索关键词: <strong>{query}</strong></p>
-                <p>阈值设置: <strong>{min_score_threshold}</strong></p>
-                <p>文档总数: <strong>{document_count}</strong></p>
-                <p>相关文档数: <strong>{relevant_count}</strong></p>
-                <p>返回结果数: <strong>{len(results)}</strong></p>
-                <p>平均相关度分数: <strong>{avg_score:.4f}</strong></p>
-                <p>最高分数: <strong>{max_score:.4f}</strong></p>
-                <p>最低分数: <strong>{min_score:.4f}</strong></p>
-            </div>
-            <h2>搜索结果</h2>
-        """
-        
-        for result in results:
-            score = result['score']
-            score_class = "high" if score >= 0.6 else "medium" if score >= 0.3 else "low"
-            result_html += f"""
-            <div class="result {'high-score' if score >= 0.6 else ''}">
-                <h3>{result['file_name']} (ID: {result['id']})</h3>
-                <p>相关度: <span class="score {score_class}">{score:.4f}</span></p>
-                <p>匹配源: {result['source']}</p>
-                <p>匹配文本: {result['match_excerpt']}</p>
-            </div>
-            """
-        
-        result_html += """
-        </body>
-        </html>
-        """
-        
-        return result_html
-    
     except Exception as e:
-        error_trace = traceback.format_exc()
-        return f"""
-        <h1>测试失败</h1>
-        <p>{str(e)}</p>
-        <pre>{error_trace}</pre>
-        """
-
-@app.route('/test_vector_search')
-def test_vector_search():
-    """测试向量搜索功能的专用路由"""
-    try:
-        # 获取查询参数
-        query = request.args.get('query', '图书')
-        doc_id = request.args.get('doc_id')
-        top_k = int(request.args.get('top_k', '5'))
-        
-        print(f"\n=== 测试向量搜索 ===")
-        print(f"查询: '{query}'")
-        print(f"文档ID: {doc_id}")
-        print(f"Top K: {top_k}")
-        
-        # 检查参数
-        if not query:
-            return jsonify({
-                'success': False,
-                'error': '查询参数不能为空'
-            }), 400
-            
-        if not doc_id:
-            return jsonify({
-                'success': False,
-                'error': '文档ID参数不能为空'
-            }), 400
-            
-        try:
-            doc_id = int(doc_id)
-        except ValueError:
-            return jsonify({
-                'success': False,
-                'error': '文档ID必须是整数'
-            }), 400
-            
-        # 检查RAGTools是否已初始化
-        global rag_tools
-        if rag_tools is None:
-            print("RAGTools尚未初始化，正在尝试初始化...")
-            init_rag_tools()
-            if rag_tools is None:
-                return jsonify({
-                    'success': False,
-                    'error': 'RAGTools初始化失败'
-                }), 500
-        
-        # 检查文档是否存在及是否有向量存储
-        doc = DocumentSummary.query.get(doc_id)
-        if not doc:
-            return jsonify({
-                'success': False,
-                'error': f'未找到ID为{doc_id}的文档'
-            }), 404
-            
-        if not doc.has_vector_store or not doc.chroma_collection:
-            return jsonify({
-                'success': False,
-                'error': f'文档ID {doc_id} 没有向量存储'
-            }), 400
-            
-        # 执行向量搜索
-        print(f"开始执行向量搜索...")
-        start_time = time.time()
-        
-        try:
-            # 使用RAGTools进行向量搜索
-            results = rag_tools.semantic_search(query, doc_id, top_k=top_k)
-            
-            # 如果主方法失败，尝试使用备用方法
-            if not results:
-                print("主要搜索方法未返回结果，尝试使用备用方法...")
-                results = rag_tools.semantic_search_fallback(query, doc_id, top_k=top_k)
-                
-            search_time = time.time() - start_time
-            
-            # 检查结果
-            if not results:
-                return jsonify({
-                    'success': True,
-                    'results': [],
-                    'message': '未找到相关结果',
-                    'search_time': search_time
-                })
-                
-            # 处理结果
-            processed_results = []
-            for i, result in enumerate(results):
-                processed_results.append({
-                    'index': i,
-                    'score': result.get('score', 0),
-                    'text': result.get('text', '')[:200] + '...' if len(result.get('text', '')) > 200 else result.get('text', ''),
-                    'metadata': result.get('metadata', {})
-                })
-            
-            # 返回结果
-            return jsonify({
-                'success': True,
-                'query': query,
-                'doc_id': doc_id,
-                'file_name': doc.file_name,
-                'result_count': len(results),
-                'search_time': search_time,
-                'results': processed_results
-            })
-            
-        except Exception as e:
-            print(f"向量搜索过程中出错: {str(e)}")
-            traceback.print_exc()
-            return jsonify({
-                'success': False,
-                'error': f'向量搜索失败: {str(e)}'
-            }), 500
-            
-    except Exception as e:
-        print(f"测试向量搜索路由出错: {str(e)}")
+        print(f"旧版搜索路由错误: {str(e)}")
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify([]), 500
 
 if __name__ == '__main__':
     with app.app_context():

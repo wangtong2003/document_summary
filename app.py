@@ -357,6 +357,14 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         original_filename = file_info.get("original_filename")
         display_filename = original_filename
         
+        # 获取目标语言并生成相应语言的关键词
+        target_language = params.get("target_language", "chinese")
+        if 'keywords' not in file_info or not file_info['keywords']:
+            print(f"为摘要生成 {target_language} 语言的关键词")
+            keywords = generate_keywords_with_model(summary_text, target_language)
+            file_info['keywords'] = "|".join(keywords)
+            print(f"生成的关键词: {file_info['keywords']}")
+        
         print(f"原始文件名: {original_filename}")
         print(f"显示文件名: {display_filename}")
         print(f"原始文本长度: {len(original_text) if original_text else 0}")
@@ -968,8 +976,10 @@ def process_document():
                     if not text.strip():
                         raise ValueError("文档内容为空")
                     
-                    # 进行主题分析
-                    topic_analysis = analyze_document_topics(text)
+                    # 获取目标语言参数
+                    target_language = params.get('target_language', 'chinese')
+                    # 进行主题分析，传递目标语言参数
+                    topic_analysis = analyze_document_topics(text, target_language)
                     print("主题分析完成")
                     
                     # 准备文件信息
@@ -1028,73 +1038,20 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
             
         client = Client(host='http://localhost:11434')
         
-        # 首先获取关键词
-        print("正在生成关键词...")
-        keyword_prompt = f"""请从以下文本中提取4个最重要的关键词,要求：
-        1. 每个关键词2-4个字
-        2. 用竖线分隔
-        3. 直接输出关键词,不要其他内容
-        4. 关键词应该反映文档的核心主题和内容
+        # 获取目标语言
+        target_language = params.get('target_language', 'chinese')
         
-        文本内容：{input_text[:3000]}"""  # 限制文本长度为3000字符
-        
+        # 使用generate_keywords_with_model生成对应语言的关键词
+        print(f"正在生成{target_language}语言的关键词...")
         try:
-            keyword_response = client.generate(
-                model='huihui_ai/qwen2.5-1m-abliterated:latest',
-                prompt=keyword_prompt,
-                stream=False,
-                options={'temperature': 0.4}
-            )
-            
-            if not keyword_response or 'response' not in keyword_response:
-                raise Exception("关键词API响应为空或格式错误")
-                
-            keywords = keyword_response['response'].strip()
-            # 清理关键词文本，只保留实际的关键词
-            keywords = re.sub(r'[^\w\u4e00-\u9fff|]', '', keywords)  # 只保留中文、字母、数字和分隔符
-            keyword_list = keywords.split('|')
-            
+            keyword_list = generate_keywords_with_model(input_text[:3000], target_language)
+            keywords = '|'.join(keyword_list)
+            print(f"生成的{target_language}关键词: {keywords}")
         except Exception as e:
             print(f"生成关键词失败: {str(e)}")
             print("使用默认关键词")
-            keyword_list = ["文档摘要", "系统设计", "模型应用", "智能处理"]
-
-        if len(keyword_list) != 4:
-            print(f"警告：关键词数量不正确({len(keyword_list)})，进行调整")
-            # 如果关键词不足4个，从文本中提取新的关键词补充
-            if len(keyword_list) < 4:
-                # 使用新的提示词尝试获取更多关键词
-                additional_prompt = f"""从以下文本中再提取{4 - len(keyword_list)}个关键词，要求：
-                1. 不要与已有关键词重复：{', '.join(keyword_list)}
-                2. 每个关键词2-4个字
-                3. 直接输出关键词，用竖线分隔
-                
-                文本内容：{input_text[:2000]}"""
-                
-                try:
-                    additional_response = client.generate(
-                        model='huihui_ai/qwen2.5-1m-abliterated:latest',
-                        prompt=additional_prompt,
-                        stream=False,
-                        options={'temperature': 0.4}
-                    )
-                    
-                    if not additional_response or 'response' not in additional_response:
-                        raise Exception("补充关键词API响应为空或格式错误")
-                        
-                    additional_keywords = additional_response['response'].strip()
-                    additional_keywords = re.sub(r'[^\w\u4e00-\u9fff|]', '', additional_keywords)
-                    additional_list = additional_keywords.split('|')
-                    keyword_list.extend(additional_list[:4 - len(keyword_list)])
-                    
-                except Exception as e:
-                    print(f"获取补充关键词失败: {str(e)}")
-                    # 使用默认值补充
-                    while len(keyword_list) < 4:
-                        keyword_list.append(f"主题{len(keyword_list)+1}")
-            
-            # 如果关键词超过4个，只保留前4个
-            keyword_list = keyword_list[:4]
+            keyword_list = get_default_keywords(target_language)
+            keywords = '|'.join(keyword_list)
             
         # 确保每个关键词不超过8个字符
         keyword_list = [k[:8] for k in keyword_list]
@@ -1103,7 +1060,6 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         
         # 获取参数
         summary_length = params.get('summary_length', 'medium')
-        target_language = params.get('target_language', 'chinese')
         summary_style = params.get('summary_style', '')
         focus_area = params.get('focus_area', '')
         expertise_level = params.get('expertise_level', '')
@@ -1150,7 +1106,7 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
         }
 
         # 构建思维链提示词，包含所有前端参数
-        summary_prompt = f"""你是一个专业的文档摘要专家。请按照思维链方法分析文档并生成高质量摘要。
+        summary_prompt = f"""你是一个专业的文档摘要专家。请严格按照思维链方法分析文档并生成高质量{target_language}摘要。
 
 [思维链步骤]
 1. 分析：仔细阅读文档，确定主题、目的和主要论点
@@ -1159,13 +1115,21 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
 4. 分类整理：按照合适的结构组织内容
 5. 提炼：从每个部分提取最具代表性的内容
 6. 关键词确认：验证已提取的关键词是否准确反映文档核心内容
-7. 整合：按照用户指定的参数要求生成最终摘要
+7. 语言转换：将内容完全转换为{target_language}，保持专业术语的准确性
+8. 整合：按照用户指定的参数要求生成最终摘要
+
+[语言控制要求]
+1. 摘要必须完全使用{target_language}，不得混合其他语言
+2. 遵循{target_language}的语法规则和表达习惯
+3. 专业术语需要使用{target_language}的对应表达方式
+4. 确保摘要流畅自然，符合{target_language}的阅读习惯
+5. 多次检查确保没有混入其他语言的词汇或表达
 
 [输出格式要求]
 1. 首先输出 [KEYWORDS] 标记
 2. 在其下方输出4个关键词，用竖线(|)分隔
 3. 然后输出 [SUMMARY] 标记
-4. 最后按照用户指定的格式输出摘要正文
+4. 最后按照用户指定的格式输出摘要正文（全{target_language}）
 
 [关键词]
 {keywords}
@@ -1201,11 +1165,12 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
 3. 重点关注"{focus_area}"方面的内容
 4. 保持客观性和准确性，不添加原文中不存在的内容
 5. 适当引用原文中的关键数据和证据支持观点
+6. 确保整个摘要100%使用{target_language}，不混入其他语言
 
 [原文内容]
 {input_text}
 
-请按照以上步骤和要求生成摘要，确保摘要的长度、风格、格式和内容符合用户指定的所有参数。
+请按照以上步骤和要求生成摘要，确保摘要的长度、风格、格式和内容符合用户指定的所有参数，并且严格使用{target_language}。
 """
         
         print("正在生成摘要...")
@@ -1229,7 +1194,8 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
                         f"""摘要长度：{current_target}字
                         1. 必须严格达到或略微超过{current_target}字
                         2. 如果未达字数要求，必须重新生成完整内容
-                        3. 如果超过目标字数20%，需要适当精简"""
+                        3. 如果超过目标字数20%，需要适当精简
+                        4. 必须完全使用{target_language}，不得混入其他语言"""
                     )
                     
                     response = client.generate(
@@ -1238,10 +1204,11 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
                         stream=False,
                         options={
                             'num_predict': min(current_num_predict, 16000),  # 不超过模型最大限制
-                            'temperature': 0.7 + (0.1 * attempt),  # 逐步提高创造性
-                            'top_p': 0.9,
+                            'temperature': 0.5 + (0.1 * attempt),  # 降低初始温度以提高一致性，逐步提高创造性
+                            'top_p': 0.85,  # 降低随机性，提高输出稳定性
                             'num_ctx': 16384,  # 确保足够上下文窗口
-                            'stop': None
+                            'stop': None,
+                            'presence_penalty': 0.2  # 增加这个参数可以减少重复，增强语言一致性
                         }
                     )
                     
@@ -1250,6 +1217,12 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
                         
                     summary_text = response['response'].strip()
                     current_length = len(summary_text)
+                    
+                    # 验证语言纯度
+                    if verify_language_purity(summary_text, target_language) is False and attempt < max_retries - 1:
+                        print(f"警告：生成的摘要语言不纯，可能混合了其他语言，尝试重新生成...")
+                        continue
+                    
                     # 更严格的长度校验
                     min_length = int(original_target * 0.98)  # 允许2%误差
                     max_length = int(original_target * 1.2)  # 允许20%冗余
@@ -1274,6 +1247,49 @@ def ollama_text(input_text, params=None, file_info=None, file_content=None):
                     if attempt < max_retries - 1:
                         continue
                     raise
+                    
+        # 添加语言纯度验证函数
+        def verify_language_purity(text, target_language):
+            """验证生成文本的语言纯度"""
+            # 语言特征字符映射
+            language_chars = {
+                'chinese': r'[\u4e00-\u9fff]',  # 中文字符
+                'english': r'[a-zA-Z]',  # 英文字母
+                'japanese': r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]',  # 日文假名和汉字
+                'korean': r'[\uac00-\ud7a3\u1100-\u11ff]',  # 韩文字符
+                'russian': r'[\u0400-\u04FF]',  # 西里尔字母
+                'german': r'[a-zA-ZäöüÄÖÜß]',  # 德文字母
+                'french': r'[a-zA-ZàâäæçéèêëîïôœùûüÿÀÂÄÆÇÉÈÊËÎÏÔŒÙÛÜŸ]',  # 法文字母
+                'spanish': r'[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]'  # 西班牙文字母
+            }
+            
+            # 容忍的其他语言字符比例
+            tolerance = 0.05  # 5%的容忍度
+            
+            try:
+                import re
+                
+                # 如果目标语言不在映射中，默认通过验证
+                if target_language not in language_chars:
+                    return True
+                
+                # 统计目标语言字符数量
+                target_chars = len(re.findall(language_chars[target_language], text))
+                
+                # 统计所有字符（不包括空格和标点符号）
+                all_chars = len(re.sub(r'[\s\p{P}]', '', text, flags=re.UNICODE))
+                
+                if all_chars == 0:
+                    return True  # 如果没有有效字符，默认验证通过
+                
+                # 计算目标语言字符占比
+                target_ratio = target_chars / all_chars
+                
+                # 判断是否达到纯度要求
+                return target_ratio >= (1 - tolerance)
+            except Exception as e:
+                print(f"语言纯度验证出错: {str(e)}")
+                return True  # 出错时默认验证通过
                     
         summary_text = generate_with_retry()
         
@@ -1431,7 +1447,20 @@ def register_page():
 
 @app.route('/summary_library')
 def summary_library():
-    """染摘要库页面"""
+    """渲染摘要库页面"""
+    
+    # 记录请求信息
+    referer = request.headers.get('Referer', '')
+    print(f"\n=== 访问摘要库 ===")
+    print(f"来源: {referer}")
+    print(f"用户IP: {request.remote_addr}")
+    print(f"用户代理: {request.user_agent}")
+    
+    # 如果是从预览页面返回的，添加额外处理
+    if referer and '/preview/' in referer:
+        print(f"检测到从预览页面返回")
+        # 这里可以添加特定于预览返回的处理逻辑
+    
     return render_template('summaries.html')
 
 @app.route('/summaries')
@@ -1517,7 +1546,7 @@ def get_summaries():
             # 如果没有关键词数据，使用大模型生成
             if not keywords_array and summary.summary_text:
                 print(f"摘要 ID {summary.id}: 尝试使用大模型生成关键词")
-                keywords_array = generate_keywords_with_model(summary.summary_text)
+                keywords_array = generate_keywords_with_model(summary.summary_text, summary.target_language)
                 print(f"摘要 ID {summary.id}: 大模型生成的关键词: {keywords_array}")
                 
                 # 如果成功生成关键词，更新数据库
@@ -1629,8 +1658,9 @@ def get_summary_detail(summary_id):
         # 如果没有关键词数据，使用大模型生成
         if not keywords_array and summary.summary_text:
             print(f"摘要详情 ID {summary.id}: 尝试使用大模型生成关键词")
-            keywords_array = generate_keywords_with_model(summary.summary_text)
+            keywords_array = generate_keywords_with_model(summary.summary_text, summary.target_language)
             print(f"摘要详情 ID {summary.id}: 大模型生成的关键词: {keywords_array}")
+            
             
             # 如果成功生成关键词，更新数据库
             if keywords_array:
@@ -1802,38 +1832,146 @@ def allowed_file(filename):
     # 移除扩展名前的点号再检查
     return extension.lstrip('.') in ALLOWED_EXTENSIONS
 
-def analyze_document_topics(text):
-    """使用大模型分析文档主题，返回主题及其关键词"""
+def analyze_document_topics(text, target_language=None):
+    """使用大模型分析文档主题，返回主题及其关键词
+    
+    Args:
+        text: 要分析的文本内容
+        target_language: 目标语言，如果为None则使用中文
+    """
     try:
         client = Client(host='http://localhost:11434')
         
         # 限制输入文本长度，避免超出上下文窗口
         text_for_analysis = text[:8000] if len(text) > 8000 else text
         
-        # 主题分析提示词
-        topic_prompt = f"""请仔细分析以下文档，提取4-6个主要主题，并为每个主题提供相关关键词。
+        # 处理语言选项
+        lang_prompts = {
+            'chinese': {
+                'instruction': '请仔细分析以下文档，提取4-6个主要主题。',
+                'json_format': '请以JSON格式返回分析结果，格式如下：',
+                'title': '主题名称',
+                'weight': '权重',
+                'description': '对该主题的简要描述',
+                'notes': [
+                    '每个主题的权重(weight)之和应为100',
+                    '对每个主题提供简短的描述'
+                ],
+                'output_instruction': '仅返回JSON格式的结果，不要包含任何解释或其他文本。'
+            },
+            'english': {
+                'instruction': 'Carefully analyze the following document, extract 4-6 main topics.',
+                'json_format': 'Return the analysis results in JSON format as follows:',
+                'title': 'Topic Name',
+                'weight': 'Weight',
+                'description': 'Brief description of the topic',
+                'notes': [
+                    'The sum of weights for all topics should be 100',
+                    'Provide a brief description for each topic'
+                ],
+                'output_instruction': 'Return only the JSON format result, without any explanations or other text.'
+            },
+            'japanese': {
+                'instruction': '以下の文書を注意深く分析し、4〜6つの主要なトピックを抽出してください。',
+                'json_format': '分析結果を次のJSON形式で返してください：',
+                'title': 'トピック名',
+                'weight': '重み',
+                'description': 'トピックの簡単な説明',
+                'notes': [
+                    'すべてのトピックの重みの合計は100であるべきです',
+                    '各トピックに簡単な説明を提供してください'
+                ],
+                'output_instruction': 'JSON形式の結果のみを返し、説明やその他のテキストを含めないでください。'
+            },
+            'korean': {
+                'instruction': '다음 문서를 주의 깊게 분석하여 4-6개의 주요 주제를 추출하십시오.',
+                'json_format': '분석 결과를 다음 JSON 형식으로 반환하십시오:',
+                'title': '주제 이름',
+                'weight': '가중치',
+                'description': '주제에 대한 간략한 설명',
+                'notes': [
+                    '모든 주제의 가중치 합계는 100이어야 합니다',
+                    '각 주제에 대한 간략한 설명을 제공하십시오'
+                ],
+                'output_instruction': 'JSON 형식 결과만 반환하고 설명이나 다른 텍스트를 포함하지 마십시오.'
+            },
+            'french': {
+                'instruction': 'Analysez attentivement le document suivant, extrayez 4 à 6 sujets principaux.',
+                'json_format': 'Retournez les résultats de l\'analyse au format JSON comme suit:',
+                'title': 'Nom du sujet',
+                'weight': 'Poids',
+                'description': 'Brève description du sujet',
+                'notes': [
+                    'La somme des poids pour tous les sujets doit être 100',
+                    'Fournissez une brève description pour chaque sujet'
+                ],
+                'output_instruction': 'Retournez uniquement le résultat au format JSON, sans explications ni autre texte.'
+            },
+            'german': {
+                'instruction': 'Analysieren Sie das folgende Dokument sorgfältig, extrahieren Sie 4-6 Hauptthemen.',
+                'json_format': 'Geben Sie die Analyseergebnisse im folgenden JSON-Format zurück:',
+                'title': 'Themenname',
+                'weight': 'Gewichtung',
+                'description': 'Kurze Beschreibung des Themas',
+                'notes': [
+                    'Die Summe der Gewichtungen für alle Themen sollte 100 betragen',
+                    'Geben Sie für jedes Thema eine kurze Beschreibung an'
+                ],
+                'output_instruction': 'Geben Sie nur das JSON-Format-Ergebnis zurück, ohne Erklärungen oder anderen Text.'
+            },
+            'spanish': {
+                'instruction': 'Analice cuidadosamente el siguiente documento, extraiga 4-6 temas principales.',
+                'json_format': 'Devuelva los resultados del análisis en formato JSON de la siguiente manera:',
+                'title': 'Nombre del tema',
+                'weight': 'Peso',
+                'description': 'Breve descripción del tema',
+                'notes': [
+                    'La suma de los pesos para todos los temas debe ser 100',
+                    'Proporcione una breve descripción para cada tema'
+                ],
+                'output_instruction': 'Devuelva solo el resultado en formato JSON, sin explicaciones ni otro texto.'
+            },
+            'russian': {
+                'instruction': 'Внимательно проанализируйте следующий документ, выделите 4-6 основных тем.',
+                'json_format': 'Верните результаты анализа в формате JSON следующим образом:',
+                'title': 'Название темы',
+                'weight': 'Вес',
+                'description': 'Краткое описание темы',
+                'notes': [
+                    'Сумма весов для всех тем должна быть 100',
+                    'Предоставьте краткое описание для каждой темы'
+                ],
+                'output_instruction': 'Верните только результат в формате JSON, без пояснений или другого текста.'
+            }
+        }
+        
+        # 默认使用中文提示
+        language = target_language if target_language in lang_prompts else 'chinese'
+        prompt_template = lang_prompts[language]
+        
+        # 构建提示词
+        notes_text = "\n".join([f"- {note}" for note in prompt_template['notes']])
+        
+        topic_prompt = f"""{prompt_template['instruction']}
 
 文档内容:
 {text_for_analysis}
 
-请以JSON格式返回分析结果，格式如下：
+{prompt_template['json_format']}
 {{
   "topics": [
     {{
-      "title": "主题名称",
+      "title": "{prompt_template['title']}",
       "weight": 35.0,
-      "keywords": ["关键词1", "关键词2", "关键词3", "关键词4", "关键词5"],
-      "description": "对该主题的简要描述"
+      "description": "{prompt_template['description']}"
     }}
-    // 更多主题...
+    // ...
   ]
 }}
 
-- 每个主题的权重(weight)之和应为100
-- 确保每个主题有5-8个关键词
-- 对每个主题提供简短的描述
+{notes_text}
 
-仅返回JSON格式的结果，不要包含任何解释或其他文本。"""
+{prompt_template['output_instruction']}"""
         
         try:
             # 调用大模型进行主题分析
@@ -1864,6 +2002,47 @@ def analyze_document_topics(text):
                     if 'topics' not in result:
                         raise ValueError("响应中缺少topics字段")
                     
+                    # 规范化处理结果
+                    # 确保权重总和为100
+                    total_weight = sum(topic.get('weight', 0) for topic in result['topics'])
+                    if total_weight > 0 and abs(total_weight - 100) > 1:
+                        # 如果总权重不接近100，则进行归一化
+                        for topic in result['topics']:
+                            topic['weight'] = round(topic.get('weight', 0) / total_weight * 100, 2)
+                    
+                    # 确保每个主题都有必要的字段
+                    for topic in result['topics']:
+                        if 'title' not in topic:
+                            topic['title'] = '未命名主题'
+                        if 'weight' not in topic:
+                            topic['weight'] = 100 / len(result['topics'])
+                        if 'description' not in topic:
+                            topic['description'] = f"关于{topic['title']}的信息"
+                        
+                        # 确保权重是浮点数
+                        topic['weight'] = float(topic['weight'])
+                    
+                    # 为每个主题生成关键词
+                    for topic in result['topics']:
+                        topic_title = topic['title']
+                        topic_desc = topic.get('description', '')
+                        
+                        # 构建主题关键词提取的输入文本
+                        topic_text = f"{topic_title}。{topic_desc}"
+                        
+                        # 使用已有的关键词生成函数生成每个主题的关键词
+                        try:
+                            print(f"为主题 '{topic_title}' 生成关键词...")
+                            keywords = generate_keywords_with_model(topic_text, target_language)
+                            # 限制关键词长度，确保每个关键词不超过8个字符
+                            topic['keywords'] = [k[:8] for k in keywords[:5]]
+                            print(f"已生成关键词: {topic['keywords']}")
+                        except Exception as ke:
+                            print(f"为主题 '{topic_title}' 生成关键词失败: {str(ke)}")
+                            # 使用默认关键词
+                            default_kw = get_default_keywords(target_language)
+                            topic['keywords'] = default_kw[:3]
+                    
                     # 添加状态信息
                     result["success"] = True
                     
@@ -1878,43 +2057,259 @@ def analyze_document_topics(text):
                 
         except Exception as e:
             print(f"主题分析调用失败: {str(e)}")
-            return get_default_topics()
+            return get_default_topics(target_language)
             
     except Exception as e:
         print(f"主题分析错误: {str(e)}")
-        return get_default_topics()
+        return get_default_topics(target_language)
 
-def get_default_topics():
-    """返回默认的主题分析结果"""
-    return {
+def get_default_topics(target_language=None):
+    """返回默认的主题分析结果
+    
+    Args:
+        target_language: 目标语言，如果为None则使用中文
+    """
+    # 不同语言的默认主题
+    default_topics = {
+        'chinese': {
         'success': True,
         'topics': [
             {
                 "title": "主要内容",
                 "weight": 35.0,
-                "keywords": ["关键内容", "核心要点", "主要观点"],
+                    "keywords": ["主题", "关键点", "核心内容", "要点", "要素"],
                 "description": "文档的主要内容和核心论述"
             },
             {
                 "title": "技术方面",
                 "weight": 30.0,
-                "keywords": ["技术特点", "实现方式", "技术细节"],
+                    "keywords": ["技术", "方法", "实现", "工具", "流程"],
                 "description": "涉及的技术内容和实现方法"
             },
             {
                 "title": "应用场景",
                 "weight": 20.0,
-                "keywords": ["使用场景", "应用领域", "实际应用"],
+                    "keywords": ["应用", "场景", "使用", "案例", "实例"],
                 "description": "文档描述的应用场景和使用方式"
             },
             {
                 "title": "发展趋势",
                 "weight": 15.0,
-                "keywords": ["未来展望", "发展方向", "潜在影响"],
+                    "keywords": ["趋势", "展望", "未来", "发展", "方向"],
                 "description": "相关领域的发展趋势和未来展望"
             }
         ]
+        },
+        'english': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "Main Content",
+                    "weight": 35.0,
+                    "keywords": ["Topic", "Key Points", "Core", "Points", "Elements"],
+                    "description": "Main content and core arguments of the document"
+                },
+                {
+                    "title": "Technical Aspects",
+                    "weight": 30.0,
+                    "keywords": ["Technical", "Method", "Implementation", "Tools", "Process"],
+                    "description": "Technical content and implementation methods involved"
+                },
+                {
+                    "title": "Application Scenarios",
+                    "weight": 20.0,
+                    "keywords": ["Application", "Scenario", "Usage", "Cases", "Examples"],
+                    "description": "Application scenarios and usage methods described in the document"
+                },
+                {
+                    "title": "Development Trends",
+                    "weight": 15.0,
+                    "keywords": ["Trends", "Outlook", "Future", "Development", "Direction"],
+                    "description": "Development trends and future prospects in related fields"
+                }
+            ]
+        },
+        'japanese': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "主な内容",
+                    "weight": 35.0,
+                    "keywords": ["主題", "要点", "核心", "ポイント", "要素"],
+                    "description": "文書の主な内容と核心的な議論"
+                },
+                {
+                    "title": "技術的側面",
+                    "weight": 30.0,
+                    "keywords": ["技術", "方法", "実装", "ツール", "プロセス"],
+                    "description": "関連する技術的内容と実装方法"
+                },
+                {
+                    "title": "適用シナリオ",
+                    "weight": 20.0,
+                    "keywords": ["応用", "シナリオ", "使用法", "事例", "例"],
+                    "description": "文書に記述された適用シナリオと使用方法"
+                },
+                {
+                    "title": "発展傾向",
+                    "weight": 15.0,
+                    "keywords": ["傾向", "展望", "未来", "発展", "方向"],
+                    "description": "関連分野の発展傾向と将来の見通し"
+                }
+            ]
+        },
+        'korean': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "주요 내용",
+                    "weight": 35.0,
+                    "keywords": ["주제", "핵심", "요점", "포인트", "요소"],
+                    "description": "문서의 주요 내용 및 핵심 논의"
+                },
+                {
+                    "title": "기술적 측면",
+                    "weight": 30.0,
+                    "keywords": ["기술", "방법", "구현", "도구", "과정"],
+                    "description": "관련 기술 내용 및 구현 방법"
+                },
+                {
+                    "title": "적용 시나리오",
+                    "weight": 20.0,
+                    "keywords": ["응용", "시나리오", "사용", "사례", "예시"],
+                    "description": "문서에 설명된 응용 시나리오 및 사용 방법"
+                },
+                {
+                    "title": "발전 동향",
+                    "weight": 15.0,
+                    "keywords": ["동향", "전망", "미래", "발전", "방향"],
+                    "description": "관련 분야의 발전 동향 및 미래 전망"
+                }
+            ]
+        },
+        'french': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "Contenu Principal",
+                    "weight": 35.0,
+                    "keywords": ["Sujet", "Points Clés", "Essence", "Éléments", "Base"],
+                    "description": "Contenu principal et arguments centraux du document"
+                },
+                {
+                    "title": "Aspects Techniques",
+                    "weight": 30.0,
+                    "keywords": ["Technique", "Méthode", "Mise en œuvre", "Outils", "Processus"],
+                    "description": "Contenu technique et méthodes d'implémentation impliquées"
+                },
+                {
+                    "title": "Scénarios d'Application",
+                    "weight": 20.0,
+                    "keywords": ["Application", "Scénario", "Utilisation", "Cas", "Exemples"],
+                    "description": "Scénarios d'application et méthodes d'utilisation décrites dans le document"
+                },
+                {
+                    "title": "Tendances de Développement",
+                    "weight": 15.0,
+                    "keywords": ["Tendances", "Perspectives", "Futur", "Développement", "Direction"],
+                    "description": "Tendances de développement et perspectives futures dans les domaines connexes"
+                }
+            ]
+        },
+        'german': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "Hauptinhalt",
+                    "weight": 35.0,
+                    "keywords": ["Thema", "Kernpunkte", "Kern", "Elemente", "Basis"],
+                    "description": "Hauptinhalt und zentrale Argumente des Dokuments"
+                },
+                {
+                    "title": "Technische Aspekte",
+                    "weight": 30.0,
+                    "keywords": ["Technik", "Methode", "Umsetzung", "Werkzeuge", "Prozess"],
+                    "description": "Technische Inhalte und Implementierungsmethoden"
+                },
+                {
+                    "title": "Anwendungsszenarien",
+                    "weight": 20.0,
+                    "keywords": ["Anwendung", "Szenario", "Nutzung", "Fälle", "Beispiele"],
+                    "description": "Im Dokument beschriebene Anwendungsszenarien und Nutzungsmethoden"
+                },
+                {
+                    "title": "Entwicklungstrends",
+                    "weight": 15.0,
+                    "keywords": ["Trends", "Ausblick", "Zukunft", "Entwicklung", "Richtung"],
+                    "description": "Entwicklungstrends und Zukunftsaussichten in verwandten Bereichen"
+                }
+            ]
+        },
+        'spanish': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "Contenido Principal",
+                    "weight": 35.0,
+                    "keywords": ["Tema", "Puntos Clave", "Núcleo", "Elementos", "Base"],
+                    "description": "Contenido principal y argumentos centrales del documento"
+                },
+                {
+                    "title": "Aspectos Técnicos",
+                    "weight": 30.0,
+                    "keywords": ["Técnica", "Método", "Implementación", "Herramientas", "Proceso"],
+                    "description": "Contenido técnico y métodos de implementación involucrados"
+                },
+                {
+                    "title": "Escenarios de Aplicación",
+                    "weight": 20.0,
+                    "keywords": ["Aplicación", "Escenario", "Uso", "Casos", "Ejemplos"],
+                    "description": "Escenarios de aplicación y métodos de uso descritos en el documento"
+                },
+                {
+                    "title": "Tendencias de Desarrollo",
+                    "weight": 15.0,
+                    "keywords": ["Tendencias", "Perspectivas", "Futuro", "Desarrollo", "Dirección"],
+                    "description": "Tendencias de desarrollo y perspectivas futuras en campos relacionados"
+                }
+            ]
+        },
+        'russian': {
+            'success': True,
+            'topics': [
+                {
+                    "title": "Основное содержание",
+                    "weight": 35.0,
+                    "keywords": ["Тема", "Ключевые моменты", "Суть", "Элементы", "Основа"],
+                    "description": "Основное содержание и центральные аргументы документа"
+                },
+                {
+                    "title": "Технические аспекты",
+                    "weight": 30.0,
+                    "keywords": ["Техника", "Метод", "Реализация", "Инструменты", "Процесс"],
+                    "description": "Технический контент и методы реализации"
+                },
+                {
+                    "title": "Сценарии применения",
+                    "weight": 20.0,
+                    "keywords": ["Применение", "Сценарий", "Использование", "Примеры", "Случаи"],
+                    "description": "Сценарии применения и методы использования, описанные в документе"
+                },
+                {
+                    "title": "Тенденции развития",
+                    "weight": 15.0,
+                    "keywords": ["Тенденции", "Перспективы", "Будущее", "Развитие", "Направление"],
+                    "description": "Тенденции развития и перспективы в смежных областях"
+                }
+            ]
+        }
     }
+    
+    # 如果没有指定语言或者指定的语言没有对应的默认主题，使用中文
+    if not target_language or target_language not in default_topics:
+        return default_topics['chinese']
+        
+    return default_topics[target_language]
 
 def get_embeddings_model():
     """获取统一的嵌入模型"""
@@ -2867,6 +3262,7 @@ def analyze_topics(summary_id):
         # 检查是否已有主题分析数据
         if doc.topic_analysis:
             # 如果已有数据，直接返回
+            print(f"使用现有的主题分析数据，文档ID: {summary_id}")
             return jsonify(doc.topic_analysis)
         
         # 没有分析数据，使用文档内容进行分析
@@ -2876,17 +3272,32 @@ def analyze_topics(summary_id):
                 'error': '文档内容为空，无法进行主题分析'
             }), 400
             
-        # 执行主题分析
-        analysis_result = analyze_document_topics(doc.original_text)
+        # 获取目标语言
+        target_language = doc.target_language
+        print(f"开始为文档(ID: {summary_id})进行主题分析，目标语言: {target_language}")
+        
+        # 执行主题分析，明确传递目标语言参数
+        analysis_result = analyze_document_topics(doc.original_text, target_language)
+        
+        if not analysis_result or not analysis_result.get('success', False):
+            print(f"主题分析失败，使用默认主题，文档ID: {summary_id}")
+            analysis_result = get_default_topics(target_language)
+        
+        # 确保结果格式正确
+        if 'topics' not in analysis_result:
+            print(f"分析结果缺少topics字段，使用默认主题，文档ID: {summary_id}")
+            analysis_result = get_default_topics(target_language)
         
         # 保存分析结果到数据库
         doc.topic_analysis = analysis_result
         db.session.commit()
+        print(f"主题分析完成并保存到数据库，文档ID: {summary_id}")
         
         return jsonify(analysis_result)
         
     except Exception as e:
         print(f"主题分析API错误: {str(e)}")
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'error': f'主题分析失败: {str(e)}'
@@ -3397,6 +3808,12 @@ def ollama_text_stream(input_text, params=None, file_info=None, file_content=Non
         
         # 使用process_response函数处理完整响应，提取关键词和摘要
         keywords_list, summary_text = process_response(full_response, target_word_count)
+        
+        # 如果从模型回复中提取的关键词不足，使用generate_keywords_with_model函数生成与目标语言匹配的关键词
+        if len(keywords_list) < 3:
+            print(f"从模型回复中提取的关键词不足，使用generate_keywords_with_model函数生成{target_language}语言的关键词")
+            keywords_list = generate_keywords_with_model(summary_text, target_language)
+        
         keywords = "|".join(keywords_list)
         
         # 检查摘要长度是否达到要求，如果未达到，进行补充生成
@@ -4165,14 +4582,19 @@ def process_response(response: str, target_word_count: int) -> tuple:
     
     return keywords, summary_text
 
-def generate_keywords_with_model(text):
-    """使用大模型结合Chain-of-Thought技术为文本生成高质量关键词"""
+def generate_keywords_with_model(text, target_language=None):
+    """使用大模型结合Chain-of-Thought技术为文本生成高质量关键词
+    
+    Args:
+        text: 要分析的文本内容
+        target_language: 目标语言，如果为None则使用中文
+    """
     try:
         if not text:
             print("无法生成关键词：输入文本为空")
-            return ["无内容", "系统生成", "自动标记", "默认关键词"]
+            return get_default_keywords(target_language)
             
-        print(f"正在使用CoT技术生成高质量关键词，文本长度: {len(text)}")
+        print(f"正在使用增强CoT技术生成高质量{target_language or '中文'}关键词，文本长度: {len(text)}")
         
         # 创建Ollama客户端
         client = Client(host='http://localhost:11434')
@@ -4180,31 +4602,77 @@ def generate_keywords_with_model(text):
         # 限制文本长度，兼顾效率和准确性
         text_sample = text[:3000] if len(text) > 3000 else text
         
-        # 使用更明确的提示词，确保只返回关键词，避免生成额外解释
-        new_keyword_prompt = f"""请分析下面的文本，提取4-6个最能代表文本核心内容的关键词：
+        # 根据目标语言设置不同的提示词
+        keyword_prompts = {
+            'chinese': """请分析下面的文本，提取4-6个最能代表文本核心内容的中文关键词""",
+            'english': """Analyze the text below and extract 4-6 keywords in English that best represent the core content""",
+            'japanese': """以下のテキストを分析し、テキストの核心的な内容を最もよく表す4〜6個の日本語キーワードを抽出してください""",
+            'korean': """아래 텍스트를 분석하고 핵심 내용을 가장 잘 나타내는 4-6개의 한국어 키워드를 추출하세요""",
+            'french': """Analysez le texte ci-dessous et extrayez 4 à 6 mots-clés en français qui représentent le mieux le contenu principal""",
+            'german': """Analysieren Sie den untenstehenden Text und extrahieren Sie 4-6 deutsche Schlüsselwörter, die den Kerninhalt am besten repräsentieren""",
+            'spanish': """Analice el texto a continuación y extraiga 4-6 palabras clave en español que mejor representen el contenido principal""",
+            'russian': """Проанализируйте текст ниже и извлеките 4-6 ключевых слов на русском языке, которые лучше всего представляют основное содержание"""
+        }
+        
+        # 语言特性提示
+        language_features = {
+            'chinese': "中文关键词通常为2-4个汉字，应该是名词或名词短语",
+            'english': "English keywords are typically nouns or noun phrases, often 1-3 words in length",
+            'japanese': "日本語のキーワードは通常、名詞または名詞句であり、2〜4文字の漢字またはひらがな/カタカナの組み合わせです",
+            'korean': "한국어 키워드는 일반적으로 명사 또는 명사구이며, 2-4자의 한글 또는 한자로 구성됩니다",
+            'french': "Les mots-clés français sont généralement des noms ou des groupes nominaux, souvent de 1 à 3 mots",
+            'german': "Deutsche Schlüsselwörter sind typischerweise Substantive oder Nominalphrasen, oft mit 1-3 Wörtern",
+            'spanish': "Las palabras clave en español suelen ser sustantivos o frases nominales, a menudo de 1 a 3 palabras",
+            'russian': "Русские ключевые слова обычно являются существительными или именными словосочетаниями, часто длиной от 1 до 3 слов"
+        }
+        
+        # 默认使用中文提示
+        language = target_language if target_language in keyword_prompts else 'chinese'
+        prompt_prefix = keyword_prompts[language]
+        language_feature = language_features.get(language, language_features['chinese'])
+        
+        # 使用增强型CoT提示词，强化语言约束
+        new_keyword_prompt = f"""{prompt_prefix}：
 
+[文本内容]
 {text_sample}
 
-请注意：
-1. 每个关键词2-4个汉字
-2. 只需输出关键词，用竖线|分隔
-3. 不要输出任何解释、分析或其他内容
-4. 不要输出序号
-5. 示例格式：关键词1|关键词2|关键词3|关键词4
+[任务要求]
+请生成4-6个{language}关键词，这些关键词必须能够准确代表文本的核心内容。
+{language_feature}。
 
-直接输出关键词："""
+[思维链分析]
+1. 分析文本主题和核心概念
+2. 识别文本中反复出现的重要术语
+3. 归纳文本的关键主题和中心思想
+4. 确保所有关键词都使用{language}，符合{language}的语言习惯
+5. 检查关键词是否能准确概括文本内容
+6. 确保关键词具有专业性和准确性
+
+[输出格式]
+只需直接输出用竖线(|)分隔的关键词，不要包含任何解释或额外内容。
+例如: 关键词1|关键词2|关键词3|关键词4
+
+[语言要求]
+务必确保所有关键词都是纯{language}，不要混合使用其他语言。
+
+现在，直接输出{language}关键词（用竖线分隔）："""
         
         # 调用模型生成关键词，降低温度确保更精确的输出
         keyword_response = client.generate(
             model='huihui_ai/qwen2.5-1m-abliterated:latest',
             prompt=new_keyword_prompt,
             stream=False,
-            options={'temperature': 0.2, 'max_tokens': 100}  # 限制输出长度
+            options={
+                'temperature': 0.2, 
+                'max_tokens': 100,  # 限制输出长度
+                'top_p': 0.85       # 减少随机性
+            }
         )
         
         if not keyword_response or 'response' not in keyword_response:
             print("关键词API响应为空或格式错误")
-            return ["文档摘要", "系统生成", "自动标记", "智能处理"]
+            return get_default_keywords(target_language)
         
         # 提取响应
         response_text = keyword_response['response'].strip()
@@ -4225,58 +4693,50 @@ def generate_keywords_with_model(text):
             # 如果没有包含分隔符的行，使用第一行或整个响应
             keywords_text = response_text.split('\n')[0] if '\n' in response_text else response_text
         
-        # 2. 进一步清理，只保留中文和分隔符
-        keywords_text = re.sub(r'[^\u4e00-\u9fff|]', '', keywords_text)
-        
-        # 3. 拆分关键词
+        # 2. 拆分关键词
         if '|' in keywords_text:
             raw_keywords = [k.strip() for k in keywords_text.split('|') if k.strip()]
         else:
-            # 如果没有分隔符，尝试按2-4个字符分词
-            raw_keywords = []
-            current = ""
-            for char in keywords_text:
-                current += char
-                if len(current) >= 4:  # 最多4个字符
-                    raw_keywords.append(current)
-                    current = ""
-            if current:  # 添加最后一个
-                raw_keywords.append(current)
+            # 如果没有分隔符，按空格分词
+            raw_keywords = keywords_text.split()
         
-        # 4. 严格验证每个关键词
-        valid_keywords = []
-        for keyword in raw_keywords:
-            # 只接受2-4个字符的关键词
-            if 2 <= len(keyword) <= 4 and re.search(r'[\u4e00-\u9fff]', keyword):
-                valid_keywords.append(keyword)
-            
-            # 达到6个关键词上限就停止
-            if len(valid_keywords) >= 6:
-                break
+        # 3. 验证每个关键词，确保至少有一些关键词
+        if not raw_keywords or len(raw_keywords) < 2:
+            # 如果没有有效关键词或太少，返回默认关键词
+            return get_default_keywords(target_language)
         
-        # 5. 确保至少有一些关键词
-        if not valid_keywords or len(valid_keywords) < 2:
-            # 如果没有有效关键词或太少，使用一些简单的分词
-            if len(keywords_text) > 4:
-                segments = []
-                for i in range(0, len(keywords_text), 3):
-                    segment = keywords_text[i:i+3]
-                    if len(segment) >= 2:
-                        segments.append(segment)
-                valid_keywords = segments[:6]  # 最多6个关键词
+        # 4. 确保最终结果不会太长，以防溢出数据库字段
+        final_keywords = raw_keywords[:6]  # 最多6个关键词
         
-        # 6. 确保最终结果不会太长，以防溢出数据库字段
-        final_keywords = valid_keywords[:6]  # 再次确保最多6个
+        # 5. 如果关键词生成质量不佳，可以尝试二次验证
+        if len(final_keywords) < 3 or any(len(k) > 15 for k in final_keywords):
+            # 如果关键词过少或过长，可能质量不佳，进行二次验证
+            print(f"关键词质量不佳，尝试使用默认关键词")
+            return get_default_keywords(target_language)
         
-        # 7. 打印和返回结果
-        print(f"最终清理后的关键词: {final_keywords}")
-        return final_keywords if final_keywords else ["文档摘要", "智能处理", "内容分析", "自动标记"]
+        # 6. 打印和返回结果
+        print(f"最终清理后的{language}关键词: {final_keywords}")
+        return final_keywords
             
     except Exception as e:
         print(f"生成关键词失败: {str(e)}")
         traceback.print_exc()
         # 返回默认关键词
-        return ["文档摘要", "系统生成", "自动标记", "智能处理"]
+        return get_default_keywords(target_language)
+
+def get_default_keywords(target_language):
+    """根据目标语言返回默认关键词"""
+    default_keywords = {
+        'chinese': ["文档摘要", "系统设计", "模型应用", "智能处理"],
+        'english': ["Document Summary", "System Design", "Model Application", "Intelligent Processing"],
+        'japanese': ["文書要約", "システム設計", "モデル応用", "インテリジェント処理"],
+        'korean': ["문서 요약", "시스템 설계", "모델 응용", "지능 처리"],
+        'french': ["Résumé Document", "Conception Système", "Application Modèle", "Traitement Intelligent"],
+        'german': ["Dokumentzusammenfassung", "Systemdesign", "Modellanwendung", "Intelligente Verarbeitung"],
+        'spanish': ["Resumen Documento", "Diseño Sistema", "Aplicación Modelo", "Procesamiento Inteligente"],
+        'russian': ["Резюме Документа", "Проектирование Системы", "Применение Модели", "Интеллектуальная Обработка"]
+    }
+    return default_keywords.get(target_language, default_keywords['chinese'])
 
 # 初始化 RAGTools
 rag_tools = None

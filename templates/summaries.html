@@ -435,7 +435,88 @@
             animation: fadeInUp 0.5s ease forwards;
         }
 
-        /* 保留原有的其他样式... */
+        .relevance-badge {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 10px;
+            margin: 12px 0;
+            text-align: center;
+            transition: all 0.2s ease;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .relevance-score {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+        }
+
+        .relevance-label {
+            font-size: 0.8rem;
+            color: #666;
+            font-weight: 500;
+        }
+
+        .high-relevance {
+            background-color: rgba(39, 174, 96, 0.1);
+            border-left: 3px solid #27ae60;
+        }
+
+        .high-relevance .relevance-score {
+            color: #27ae60;
+        }
+
+        .medium-relevance {
+            background-color: rgba(52, 152, 219, 0.1);
+            border-left: 3px solid #3498db;
+        }
+
+        .medium-relevance .relevance-score {
+            color: #3498db;
+        }
+
+        .match-excerpt {
+            background-color: rgba(0,0,0,0.02);
+            border-radius: 8px;
+            padding: 10px;
+            margin: 12px 0;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            border-left: 3px solid #95a5a6;
+        }
+
+        .match-excerpt-title {
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .match-excerpt-content {
+            color: #555;
+        }
+
+        .match-highlight {
+            background-color: rgba(241, 196, 15, 0.2);
+            padding: 2px 0;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+
+        /* 搜索匹配卡片样式 */
+        .exact-match-card {
+            border-left: 4px solid #27ae60;
+            background-color: rgba(39, 174, 96, 0.02);
+        }
+
+        .high-relevance-card {
+            border-left: 4px solid #3498db;
+            background-color: rgba(52, 152, 219, 0.02);
+        }
     </style>
 </head>
 <body>
@@ -464,7 +545,164 @@
 
     <!-- 主要内容 -->
     <div class="container mt-4">
-        <h1 class="mb-4">我的文档摘要库</h1>
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <h2 class="mb-0">文档摘要库</h2>
+                <p class="text-muted">您的所有文档摘要</p>
+            </div>
+            <div class="col-md-6 text-end">
+                <!-- 添加重新索引按钮 -->
+                <button id="reindexBtn" class="btn btn-outline-primary ms-2">
+                    <i class="bi bi-arrow-repeat"></i> 重新索引文档库
+                </button>
+                
+                <!-- 添加重新初始化RAGTools按钮 -->
+                <button id="reinitRagBtn" class="btn btn-outline-info ms-2" title="当更换了嵌入模型但不想重新索引所有文档时使用">
+                    <i class="bi bi-lightning"></i> 重新初始化嵌入模型
+                </button>
+                
+                <div class="text-muted small mt-1">
+                    当前向量模型: <span class="badge bg-info">{{ embedding_model }}</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 添加重新索引模态框 -->
+        <div class="modal fade" id="reindexModal" tabindex="-1" aria-labelledby="reindexModalLabel" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="reindexModalLabel">重新索引文档库</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>您确定要对所有文档重新进行向量索引吗？这个过程可能需要一些时间，并且将使用当前的向量模型 <strong>{{ embedding_model }}</strong>。</p>
+                        <p>此操作将删除现有的向量索引并创建新索引，但不会修改您的原始文档和摘要内容。</p>
+                        <div id="reindexProgress" class="progress d-none mt-3">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <div id="reindexResult" class="alert mt-3 d-none"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                        <button type="button" class="btn btn-primary" id="confirmReindex">确认重新索引</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 添加JavaScript代码处理重新索引 -->
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                // 重新索引按钮点击事件
+                document.getElementById('reindexBtn').addEventListener('click', function() {
+                    const reindexModal = new bootstrap.Modal(document.getElementById('reindexModal'));
+                    reindexModal.show();
+                });
+                
+                // 重新初始化RAGTools按钮点击事件
+                document.getElementById('reinitRagBtn').addEventListener('click', function() {
+                    const btn = this;
+                    const originalText = btn.innerHTML;
+                    
+                    // 显示加载状态
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 正在初始化...';
+                    
+                    // 发送请求
+                    fetch('/api/reinit_rag_tools', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        credentials: 'same-origin'
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            // 成功
+                            Toast.fire({
+                                icon: 'success',
+                                title: data.message
+                            });
+                        } else {
+                            // 失败
+                            Toast.fire({
+                                icon: 'error',
+                                title: data.message
+                            });
+                        }
+                    })
+                    .catch(error => {
+                        console.error('重新初始化错误:', error);
+                        Toast.fire({
+                            icon: 'error',
+                            title: '重新初始化过程中发生错误'
+                        });
+                    })
+                    .finally(() => {
+                        // 恢复按钮状态
+                        btn.disabled = false;
+                        btn.innerHTML = originalText;
+                    });
+                });
+                
+                // 确认重新索引按钮点击事件
+                document.getElementById('confirmReindex').addEventListener('click', function() {
+                    const confirmBtn = this;
+                    const progressBar = document.getElementById('reindexProgress');
+                    const resultDiv = document.getElementById('reindexResult');
+                    
+                    // 禁用按钮，显示进度条
+                    confirmBtn.disabled = true;
+                    confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 处理中...';
+                    progressBar.classList.remove('d-none');
+                    resultDiv.classList.add('d-none');
+                    
+                    // 发送重新索引请求
+                    fetch('/api/reindex_all', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        credentials: 'same-origin'
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        // 显示结果
+                        if (data.success) {
+                            resultDiv.classList.remove('d-none', 'alert-danger');
+                            resultDiv.classList.add('alert-success');
+                            resultDiv.innerHTML = `<i class="bi bi-check-circle-fill"></i> ${data.message}`;
+                            
+                            // 3秒后刷新页面
+                            setTimeout(() => {
+                                window.location.reload();
+                            }, 3000);
+                        } else {
+                            resultDiv.classList.remove('d-none', 'alert-success');
+                            resultDiv.classList.add('alert-danger');
+                            resultDiv.innerHTML = `<i class="bi bi-exclamation-triangle-fill"></i> ${data.message}`;
+                        }
+                    })
+                    .catch(error => {
+                        console.error('重新索引错误:', error);
+                        resultDiv.classList.remove('d-none', 'alert-success');
+                        resultDiv.classList.add('alert-danger');
+                        resultDiv.innerHTML = `<i class="bi bi-exclamation-triangle-fill"></i> 重新索引过程中发生错误: ${error.message}`;
+                    })
+                    .finally(() => {
+                        // 重置按钮状态
+                        confirmBtn.disabled = false;
+                        confirmBtn.innerHTML = '确认重新索引';
+                        
+                        // 设置进度条为100%
+                        const progressBarInner = progressBar.querySelector('.progress-bar');
+                        progressBarInner.style.width = '100%';
+                    });
+                });
+            });
+        </script>
         
         <div class="search-container">
             <input type="text" id="searchInput" class="search-input" placeholder="输入关键词进行智能检索..." 

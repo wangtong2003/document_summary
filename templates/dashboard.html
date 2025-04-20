@@ -8,10 +8,6 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap-icons-1.11.0.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/github-markdown.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/highlight-github.min.css') }}">
-    <script src="{{ url_for('static', filename='js/marked.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/bootstrap.bundle-5.3.0.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/highlight.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/markdown-it.min.js') }}"></script>
     <style>
         :root {
             --primary-color: #3b82f6;
@@ -33,6 +29,20 @@
         .navbar-brand {
             font-weight: 600;
             color: var(--primary-color);
+        }
+
+        /* 修复Bootstrap图标显示 */
+        .bi::before {
+            display: inline-block;
+            font-family: bootstrap-icons !important;
+            font-style: normal;
+            font-weight: normal !important;
+            font-variant: normal;
+            text-transform: none;
+            line-height: 1;
+            vertical-align: -0.125em;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
         .main-container {
@@ -683,11 +693,40 @@
         }
 
         /* 定义关键词标签样式 */
-        .keywords-section .badge {
+        .keywords-section .badge,
+        .keywords-list .badge,
+        .badge-keyword {
             font-size: 0.85rem;
             padding: 0.35em 0.65em;
             margin-right: 0.5rem;
             margin-bottom: 0.5rem;
+            background-color: #f0f7ff;
+            color: #0a58ca;
+            border: 1px solid #cfe2ff;
+            border-radius: 1rem;
+            display: inline-block;
+            font-weight: 500;
+        }
+
+        .keywords-container {
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            background-color: #f8f9fa;
+            border-radius: 0.5rem;
+            border: 1px solid #e9ecef;
+        }
+
+        .keywords-title {
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: #495057;
+            font-size: 0.95rem;
+        }
+
+        .keywords-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
         }
 
         /* 添加全局切换视图按钮样式 */
@@ -1228,6 +1267,7 @@
     <div id="error-message" class="hidden fixed top-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded z-50" role="alert">
     </div>
 
+    <script src="{{ url_for('static', filename='js/marked.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/bootstrap.bundle-5.3.0.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/markdown-it.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/highlight.min.js') }}"></script>
@@ -1985,17 +2025,60 @@
             // 添加调试日志
             console.log("处理摘要内容，长度:", text.length);
             
-            // 提取并处理关键词和摘要
+            // 初始化变量
             let summaryText = text;
+            let keywordsHtml = '';
+            let keywords = [];
             
-            // 完全删除关键词部分，只保留摘要部分
-            if (text.includes('[KEYWORDS]') && text.includes('[SUMMARY]')) {
+            // 提取关键词部分
+            if (text.includes('[KEYWORDS]')) {
+                const keywordsStart = text.indexOf('[KEYWORDS]') + '[KEYWORDS]'.length;
+                let keywordsEnd;
+                
+                if (text.includes('[SUMMARY]')) {
+                    keywordsEnd = text.indexOf('[SUMMARY]');
+                } else {
+                    // 如果没有[SUMMARY]标记，查找下一个换行符
+                    const nextLine = text.indexOf('\n', keywordsStart);
+                    keywordsEnd = nextLine !== -1 ? nextLine : text.length;
+                }
+                
+                // 提取关键词文本
+                if (keywordsEnd > keywordsStart) {
+                    const keywordsText = text.substring(keywordsStart, keywordsEnd).trim();
+                    console.log("提取的关键词文本:", keywordsText);
+                    
+                    // 解析关键词
+                    if (keywordsText.includes('|')) {
+                        // 使用竖线分隔的关键词
+                        keywords = keywordsText.split('|').map(k => k.trim()).filter(k => k);
+                    } else if (keywordsText.includes(',')) {
+                        // 使用逗号分隔的关键词
+                        keywords = keywordsText.split(',').map(k => k.trim()).filter(k => k);
+                    } else {
+                        // 使用空格分隔的关键词
+                        keywords = keywordsText.split(/\s+/).filter(k => k);
+                    }
+                    
+                    console.log("解析后的关键词:", keywords);
+                    
+                    // 生成关键词HTML
+                    if (keywords.length > 0) {
+                        keywordsHtml = keywords.map(k => 
+                            `<span class="badge badge-keyword">${escapeHtml(k)}</span>`
+                        ).join(' ');
+                    }
+                }
+            }
+            
+            // 提取摘要部分
+            if (text.includes('[SUMMARY]')) {
                 const summaryStart = text.indexOf('[SUMMARY]');
                 if (summaryStart !== -1) {
                     // 只取[SUMMARY]后面的部分
                     summaryText = text.substring(summaryStart + '[SUMMARY]'.length).trim();
                 }
-            } else if (text.includes('[KEYWORDS]') && !text.includes('[SUMMARY]')) {
+            } else if (text.includes('[KEYWORDS]')) {
                 // 如果只有关键词标记但没有摘要标记，移除关键词部分
                 const keywordsEnd = text.indexOf('[KEYWORDS]');
                 const nextLineAfterKeywords = text.indexOf('\n', keywordsEnd + '[KEYWORDS]'.length);
@@ -2011,9 +2094,6 @@
             
             // 移除可能的SUMMARY标记
             summaryText = summaryText.replace(/\[SUMMARY\]/g, '');
-            
-            // 不再生成关键词HTML，返回空字符串
-            let keywordsHtml = '';
             
             // 处理Markdown内容
             try {
@@ -2231,6 +2311,92 @@
                     icon.className = 'bi bi-chevron-up ms-2';
                 }
             }
+        }
+
+        // 动态更新DOM，添加摘要结果
+        function appendSummaryResult(data) {
+            const chatBody = document.getElementById('chatBody');
+            let container = document.createElement('div');
+            container.className = 'summary-card card mb-4';
+            
+            // 基本信息
+            const fileName = data.filename || '未知文件';
+            const fileIcon = getFileIcon(fileName);
+            
+            // 处理Markdown内容
+            const processed = processMarkdown(data.summary);
+            const renderedContent = processed.renderedContent;
+            const keywordsHtml = processed.keywordsHtml;
+            
+            // 构建HTML
+            container.innerHTML = `
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="${fileIcon} me-2 file-icon"></i>
+                        <h5 class="card-title mb-0">${escapeHtml(fileName)}</h5>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="copySummary(this)">
+                            <i class="bi bi-clipboard"></i> 复制
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary ms-2" onclick="downloadSummary(this)">
+                            <i class="bi bi-download"></i> 下载
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    ${keywordsHtml ? `
+                    <div class="keywords-container mb-3">
+                        <div class="keywords-title mb-2">
+                            <i class="bi bi-tags"></i> 关键词
+                        </div>
+                        <div class="keywords-list">
+                            ${keywordsHtml}
+                        </div>
+                    </div>
+                    ` : ''}
+                    <div class="summary-content" data-original-content="${escapeHtml(data.summary)}">
+                        ${renderedContent}
+                    </div>
+                </div>
+            `;
+            
+            chatBody.appendChild(container);
+            
+            // 初始化新添加内容中的代码高亮
+            container.querySelectorAll('pre code').forEach(block => {
+                hljs.highlightElement(block);
+            });
+            
+            // 添加复制按钮到代码块
+            container.querySelectorAll('pre').forEach(block => {
+                if (!block.querySelector('.copy-btn')) {
+                    const button = document.createElement('button');
+                    button.className = 'copy-btn btn btn-sm btn-outline-secondary';
+                    button.textContent = '复制';
+                    button.style.position = 'absolute';
+                    button.style.top = '5px';
+                    button.style.right = '5px';
+                    button.style.opacity = '0.7';
+                    
+                    block.style.position = 'relative';
+                    
+                    button.addEventListener('click', () => {
+                        const code = block.querySelector('code')?.textContent || block.textContent;
+                        navigator.clipboard.writeText(code).then(() => {
+                            button.textContent = '已复制!';
+                            setTimeout(() => {
+                                button.textContent = '复制';
+                            }, 2000);
+                        });
+                    });
+                    
+                    block.appendChild(button);
+                }
+            });
+            
+            // 滚动到新添加的内容
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     </script>
 </body>

@@ -5,11 +5,13 @@ Flask-SQLAlchemy==3.1.1
 Flask-Migrate==4.0.5
 Flask-JWT-Extended==4.6.0
 Flask-RESTful==0.3.10
+cachelib>=0.9.0
 
 # 数据库相关
 PyMySQL==1.1.0
 mysql-connector-python==8.3.0
 SQLAlchemy==2.0.28
+cryptography==36.0.2
 
 # 文档处理
 PyMuPDF==1.23.26  # fitz
@@ -25,21 +27,23 @@ numpy==1.26.4
 gensim==4.3.2
 scipy==1.10.1
 
+# PyTorch GPU版本 (解除下面注释后运行: pip install -r requirements.txt)
+# 如果使用CUDA 11.8 (适用于较新的显卡)
+torch>=2.0.0 # 运行后，执行: pip install torch --index-url https://download.pytorch.org/whl/cu118
+
 # LangChain相关
 langchain>=0.3.0
 langchain-community>=0.3.0
 langchain-core>=0.3.0
 langchain-text-splitters>=0.3.0
-langchain-huggingface>=0.1.2
-langchain-ollama>=0.2.3
+langchain-ollama>=0.2.3  # 使用Ollama作为嵌入和LLM提供者
 langchain-chroma>=0.1.0
 chromadb>=0.4.22
-faiss-cpu==1.7.4
-sentence-transformers==2.6.0
+# 注意：使用GPU时应安装faiss-gpu而不是faiss-cpu
+faiss-cpu==1.7.4 # 如需GPU加速，替换为: pip install faiss-gpu==1.7.4
 
 # Ollama API
-ollama>=0.1.27
-ollama-python>=0.4.4
+ollama>=0.4.8
 
 # 安全相关
 Werkzeug==3.0.1

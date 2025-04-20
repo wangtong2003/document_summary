@@ -11,6 +11,7 @@
 - **语义搜索**：基于向量数据库的高效文档内容搜索
 - **RAG问答**：与文档进行自然语言对话交互
 - **主题分析**：自动分析文档的主题结构
+- **GPU加速**：支持使用GPU加速向量检索操作
 
 ## 技术架构
 
@@ -19,6 +20,7 @@
 - **数据库**：MySQL
 - **大语言模型**：Ollama本地部署的开源模型
 - **向量存储**：FAISS和ChromaDB
+- **向量嵌入**：本地部署的Ollama嵌入模型
 - **文本处理**：PyMuPDF、python-docx、EbookLib等
 
 ## 新增功能
@@ -26,6 +28,7 @@
 - **文本摘要优化**：改进了摘要生成的提示模板，确保生成的摘要更符合用户指定的长度要求
 - **摘要格式化**：支持多种摘要格式，包括连续段落、要点式和问答式等
 - **独立摘要存储**：添加了独立的摘要存储表，更好地管理纯文本摘要
+- **本地嵌入优化**：优化使用本地Ollama模型进行文本嵌入，提高处理速度
 
 ## 环境配置与安装
 
@@ -33,7 +36,8 @@
 
 - Python 3.10+
 - MySQL 8.0+
-- Ollama服务
+- Ollama服务 (用于LLM和文本嵌入)
+- (可选) NVIDIA GPU，用于加速向量操作
 
 ### 安装步骤
 
@@ -48,12 +52,24 @@ cd document_summary
 pip install -r requirements.txt
 ```
 
-3. 初始化数据库
+3. 安装GPU支持（可选）
+```bash
+# 如果有NVIDIA GPU并想启用GPU加速，请运行:
+python install_gpu.py
+```
+
+4. 安装必要的Ollama模型
+```bash
+# 确保已安装Ollama并下载嵌入模型
+ollama pull snowflake-arctic-embed2
+```
+
+5. 初始化数据库
 ```bash
 mysql -u <username> -p < init.sql
 ```
 
-4. 配置环境变量
+6. 配置环境变量
 ```bash
 # 创建.env文件并配置以下变量
 FLASK_APP=app.py
@@ -61,7 +77,7 @@ DATABASE_URI=mysql+pymysql://username:password@localhost/doc_summary
 SECRET_KEY=your-secret-key
 ```
 
-5. 启动应用
+7. 启动应用
 ```bash
 flask run --host=127.0.0.1 --port=8080
 ```
@@ -73,8 +89,20 @@ flask run --host=127.0.0.1 --port=8080
 3. 调整摘要参数，包括长度、语言、专业程度等
 4. 点击生成按钮获取摘要结果
 
+## GPU加速说明
+
+系统默认会检测是否有可用的GPU，如果有将自动使用GPU进行向量检索操作，显著提高文档处理和搜索性能。
+
+- 要验证GPU是否正常工作，可以运行:
+```bash
+python -c "import torch; print('CUDA可用:',torch.cuda.is_available()); print('GPU:',torch.cuda.get_device_name(0) if torch.cuda.is_available() else '无')"
+```
+
+- 如果有GPU但未被正确检测，请确保已安装正确版本的CUDA和PyTorch
+
 ## 注意事项
 
 - 确保Ollama服务已经启动并加载了所需模型
 - 文档大小限制为200MB
-- 首次使用大文档时，向量索引创建可能需要较长时间 
+- 首次使用大文档时，向量索引创建可能需要较长时间
+- GPU加速需要安装兼容版本的PyTorch和CUDA 

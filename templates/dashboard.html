@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文档摘要生成器</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.1/github-markdown.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
+    <link href="{{ url_for('static', filename='css/bootstrap-5.3.0.min.css') }}" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap-icons-1.11.0.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/github-markdown.min.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/highlight-github.min.css') }}">
+    <script src="{{ url_for('static', filename='js/marked.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle-5.3.0.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/highlight.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/markdown-it.min.js') }}"></script>
     <style>
         :root {
             --primary-color: #3b82f6;
@@ -1092,13 +1092,13 @@
                 文档摘要生成器
             </a>
             <div class="d-flex align-items-center">
-                <a href="/admin/users" class="nav-link me-3">
+                <a href="/admin/users" class="nav-link me-3" id="adminLink" style="display: none;">
                     <i class="bi bi-people"></i> 用户管理
                 </a>
                 <a href="/summary_library" class="nav-link me-3">
                     <i class="bi bi-journal-text"></i> 摘要库
                 </a>
-                <a href="/login" class="nav-link">
+                <a href="#" class="nav-link" id="logoutBtn">
                     <i class="bi bi-box-arrow-right"></i> 退出
                 </a>
             </div>
@@ -1228,10 +1228,35 @@
     <div id="error-message" class="hidden fixed top-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded z-50" role="alert">
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="{{ url_for('static', filename='js/bootstrap.bundle-5.3.0.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/markdown-it.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/highlight.min.js') }}"></script>
     <script>
+        // 检查用户角色并显示/隐藏管理员按钮
+        document.addEventListener('DOMContentLoaded', function() {
+            fetch('/api/check_auth')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.authenticated && data.user && data.user.role === 'admin') {
+                        document.getElementById('adminLink').style.display = 'inline-block';
+                    }
+                })
+                .catch(error => console.error('检查用户权限出错:', error));
+                
+            // 绑定退出按钮事件
+            const logoutBtn = document.getElementById('logoutBtn');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    fetch('/logout')
+                        .then(response => {
+                            window.location.href = '/login';
+                        })
+                        .catch(error => console.error('退出登录出错:', error));
+                });
+            }
+        });
+    
         // 全局变量
         let selectedFiles = [];
         const uploadArea = document.getElementById('uploadArea');

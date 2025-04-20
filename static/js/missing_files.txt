@@ -1,0 +1,9 @@
+以下是需要从CDN下载到本地的文件：
+
+1. markdown-it.min.js - 需要从 https://cdnjs.cloudflare.com/ajax/libs/markdown-it/13.0.1/markdown-it.min.js 下载
+
+其他静态资源文件是否存在但为空：
+- highlight.min.js (0.0B)
+- bootstrap.bundle-5.3.0.min.js (0.0B)
+
+需要检查这些文件是否为空，如果为空，需要重新下载。 

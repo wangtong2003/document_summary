@@ -1,4 +1,4 @@
-import pymysql
+﻿import pymysql
 pymysql.install_as_MySQLdb()
 
 from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory, redirect, url_for
@@ -108,10 +108,13 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 }
 
 # Session 配置
-app.config['SECRET_KEY'] = 'your-secret-key-here'  # 设置 session 密钥
+app.config['SECRET_KEY'] = 'a5c9f438d3854c1e9c39b48ae4a5bc7fb62af6239d8745fe8c2baeb4cd4eb812'  # 设置 session 密钥
 app.config['SESSION_TYPE'] = 'filesystem'  # 使用文件系统存储 session
 app.config['SESSION_FILE_DIR'] = 'flask_session'  # session 文件存储目录
+app.config['SESSION_PERMANENT'] = True  # session持久化
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)  # session 有效期
+app.config['SESSION_USE_SIGNER'] = True  # 签名cookie sid，提高安全性
+app.config['SESSION_KEY_PREFIX'] = 'docsummary_'  # session前缀
 
 # 初始化 Flask-Session
 Session(app)
@@ -123,6 +126,20 @@ migrate = Migrate(app, db)  # 初始化 Flask-Migrate
 for folder in [UPLOAD_FOLDER, DOCUMENTS_FOLDER, 'flask_session']:
     if not os.path.exists(folder):
         os.makedirs(folder)
+
+
+
+# 登录验证装饰器
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 调试信息
+        print(f"检查登录状态: session={session}")
+        if 'user_id' not in session:
+            print("用户未登录，重定向到登录页面")
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
 
 # 数据模型定义
 class User(db.Model):
@@ -181,6 +198,10 @@ class DocumentSummary(db.Model):
     total_chunks = db.Column(db.Integer, default=0)
     chroma_collection = db.Column(db.String(100))  # 新增：Chroma集合名称
     has_vector_store = db.Column(db.Boolean, default=False)  # 新增：是否已创建向量存储
+    
+    # 添加用户关联
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user = db.relationship('User', backref=db.backref('summaries', lazy=True))
     
     # 关联文件块
     chunks = db.relationship('FileChunk', backref='document', lazy='dynamic',
@@ -339,7 +360,13 @@ def get_file_content(summary_id):
 def save_summary_to_db(file_info, summary_text, params, file_content=None):
     """保存或更新文档摘要到MySQL"""
     try:
+        # 获取当前用户ID
+        user_id = session.get('user_id')
+        if not user_id:
+            raise ValueError("用户未登录，无法保存摘要")
+            
         print("\n=== 开始保存摘要到数据库 ===")
+        print(f"用户ID: {user_id}")
         print(f"摘要长度: {len(summary_text) if summary_text else 0}")
         print(f"参数: {params}")
         
@@ -370,9 +397,10 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
         print(f"原始文本长度: {len(original_text) if original_text else 0}")
 
         try:
-            # 检查是否已存在相同文件的摘要
+            # 检查是否已存在相同文件的摘要 - 增加用户ID过滤
             existing_summary = DocumentSummary.query.filter_by(
-                file_hash=file_hash
+                file_hash=file_hash,
+                user_id=user_id
             ).first()
             
             if existing_summary:
@@ -439,6 +467,7 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 print("创建新摘要记录")
                 # 创建新摘要记录
                 new_summary = DocumentSummary(
+                    user_id=user_id,  # 关联用户ID
                     file_name=file_info["filename"],
                     file_hash=file_hash,
                     summary_text=summary_text,
@@ -904,6 +933,7 @@ def get_file_mime_type(filename):
     return mime_types.get(ext, 'application/octet-stream')
 
 @app.route('/process_document', methods=['POST'])
+@login_required
 def process_document():
     """处理上传的文档并生成摘要"""
     try:
@@ -1393,9 +1423,14 @@ def login():
             
         if check_password_hash(user.password, password):
             # 登录成功
+            session.clear()  # 清除旧session
             session['user_id'] = user.id
             session['username'] = user.username
             session['role'] = user.role
+            session.permanent = True  # 设置为永久session
+            
+            print(f"用户登录成功: {username}, session_id={request.cookies.get('session')}")
+            print(f"Session内容: {session}")
             
             return jsonify({
                 'message': '登录成功',
@@ -1406,7 +1441,7 @@ def login():
                 }
             })
         else:
-            return jsonify({'error': '用户名密码错误'}), 401
+            return jsonify({'error': '用户名或密码错误'}), 401
             
     except Exception as e:
         print(f"登录失败: {str(e)}")
@@ -1433,19 +1468,25 @@ def check_auth():
     return jsonify({'authenticated': False}), 401
 
 @app.route('/')
+@login_required
 def index():
     """主页"""
+    # 已登录则显示仪表盘
     return render_template('dashboard.html')
 
 @app.route('/login')
 def login_page():
+    # 如果用户已登录，重定向到主页
+    if 'user_id' in session:
+        return redirect('/')
     return render_template('login.html')
 
 @app.route('/register')
-def register_page():
+def register_page_view():
     return render_template('register.html')
 
 @app.route('/summary_library')
+@login_required
 def summary_library():
     """渲染摘要库页面"""
     
@@ -1464,10 +1505,16 @@ def summary_library():
     return render_template('summaries.html')
 
 @app.route('/summaries')
+@login_required
 def get_summaries():
     """获取所有摘要列表（分页）"""
     try:
         print("\n=== 开始获取摘要列表 ===")
+        
+        # 获取当前登录用户ID
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': '用户未登录'}), 401
         
         # 获取分页参数
         page = request.args.get('page', 1, type=int)
@@ -1477,11 +1524,11 @@ def get_summaries():
         if per_page > 50:
             per_page = 50
             
-        # 查询总数
-        total = DocumentSummary.query.count()
+        # 查询总数 - 只查询当前用户的
+        total = DocumentSummary.query.filter_by(user_id=user_id).count()
         
-        # 分页查询
-        pagination = DocumentSummary.query.order_by(
+        # 分页查询 - 只查询当前用户的
+        pagination = DocumentSummary.query.filter_by(user_id=user_id).order_by(
             DocumentSummary.created_at.desc()
         ).paginate(
             page=page,
@@ -1490,7 +1537,7 @@ def get_summaries():
         )
         
         summaries = pagination.items
-        print(f"查询到 {len(summaries)} 条摘要记录")
+        print(f"用户 {user_id} 查询到 {len(summaries)} 条摘要记录")
         
         results = []
         for summary in summaries:
@@ -1602,15 +1649,23 @@ def get_summaries():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/summaries/<int:summary_id>', methods=['GET'])
+@login_required
 def get_summary_detail(summary_id):
     """获取单摘要详情"""
     try:
         print(f"\n=== 获取摘要详情 ID: {summary_id} ===")
-        summary = DocumentSummary.query.get_or_404(summary_id)
+        
+        # 获取当前登录用户ID
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': '用户未登录'}), 401
+            
+        # 查找摘要，并确保它属于当前用户
+        summary = DocumentSummary.query.filter_by(id=summary_id, user_id=user_id).first()
         
         if not summary:
-            print(f"未找到ID为 {summary_id} 的摘要")
-            return jsonify({'error': f'未找到ID为 {summary_id} 的摘要'}), 404
+            print(f"未找到ID为 {summary_id} 的摘要或用户无权访问")
+            return jsonify({'error': f'未找到ID为 {summary_id} 的摘要或您无权访问'}), 404
             
         # 使用原始文件名或显示文件名
         display_name = summary.original_filename or summary.display_filename or summary.file_name
@@ -1716,43 +1771,27 @@ def delete_summary(summary_id):
                 from langchain_chroma import Chroma
                 from chromadb import PersistentClient
                 
-                # 方法1: 通过PersistentClient删除集合
+                # 方法1: 首先尝试使用PersistentClient直接删除集合
                 try:
-                    print("方法1: 使用PersistentClient删除集合")
-                    chroma_client = PersistentClient(path=persist_directory)
+                    print("方法1: 使用PersistentClient直接删除集合")
+                    client = PersistentClient(path=persist_directory)
+                    client.delete_collection(collection_name)
+                    print(f"成功通过PersistentClient删除集合 {collection_name}")
                     
-                    # 兼容ChromaDB不同版本的API
-                    try:
-                        # ChromaDB v0.6.0+版本，list_collections直接返回集合名称列表
-                        all_collections = set(chroma_client.list_collections())
-                        print(f"ChromaDB v0.6.0+: 获取到 {len(all_collections)} 个集合名称")
-                        if collection_name in all_collections:
-                            chroma_client.delete_collection(collection_name)
-                            print(f"成功通过PersistentClient删除集合: {collection_name}")
-                        else:
-                            print(f"集合不存在: {collection_name}")
-                    except Exception:
-                        # 旧版本API，集合对象有name属性
-                        collections_list = chroma_client.list_collections()
-                        collection_names = [col.name for col in collections_list]
-                        if collection_name in collection_names:
-                            chroma_client.delete_collection(collection_name)
-                            print(f"成功通过PersistentClient删除集合: {collection_name}")
-                        else:
-                            print(f"集合不存在: {collection_name}")
-                            
                 except Exception as e:
                     print(f"通过PersistentClient删除集合失败: {str(e)}")
                     
                     # 方法2: 通过Chroma实例删除集合
                     try:
                         print("方法2: 使用Chroma实例删除集合")
+                        # 使用本地Ollama嵌入模型
                         from langchain_ollama import OllamaEmbeddings
                         
                         embeddings = OllamaEmbeddings(
                             model="snowflake-arctic-embed2",
                             base_url="http://localhost:11434"
                         )
+                        print("使用本地Ollama嵌入模型删除向量存储")
                         
                         chroma_db = Chroma(
                             persist_directory=persist_directory,
@@ -3362,6 +3401,7 @@ def semantic_search(query, doc_id):
         return []
 
 @app.route('/process_document_stream', methods=['POST'])
+@login_required
 def process_document_stream():
     """处理文档并生成摘要 - 流式输出版本"""
     print("接收到流式处理请求")
@@ -4220,10 +4260,35 @@ class RAGTools:
     """RAG工具类，用于处理文档的向量存储和检索"""
     
     def __init__(self):
-        self.embeddings = OllamaEmbeddings(
-            model="snowflake-arctic-embed2",
-            base_url="http://localhost:11434"
-        )
+        # 使用本地Ollama嵌入模型
+        from langchain_ollama import OllamaEmbeddings
+        
+        try:
+            # 检查GPU是否可用
+            import torch
+            use_gpu = torch.cuda.is_available()
+            device = 'cuda' if use_gpu else 'cpu'
+            
+            print(f"初始化Ollama嵌入模型，当前设备: {device}")
+            
+            # 使用本地Ollama嵌入模型
+            self.embeddings = OllamaEmbeddings(
+                model="snowflake-arctic-embed2",
+                base_url="http://localhost:11434"
+            )
+            
+            print(f"成功初始化本地Ollama嵌入模型")
+            
+        except Exception as e:
+            print(f"初始化过程出现错误: {str(e)}")
+            # 回退到基础Ollama嵌入模型
+            from langchain_ollama import OllamaEmbeddings
+            self.embeddings = OllamaEmbeddings(
+                model="snowflake-arctic-embed2",
+                base_url="http://localhost:11434"
+            )
+            print("使用基础Ollama嵌入模型")
+            
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
@@ -4866,6 +4931,60 @@ def search_redirect():
         print(f"旧版搜索路由错误: {str(e)}")
         traceback.print_exc()
         return jsonify([]), 500
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    """注册新用户API"""
+    try:
+        # 获取JSON数据
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "无效的请求数据"}), 400
+            
+        # 提取用户信息
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+        
+        # 验证必填字段
+        if not all([username, email, password]):
+            return jsonify({"error": "用户名、邮箱和密码为必填项"}), 400
+            
+        # 检查用户名是否已存在
+        existing_user = User.query.filter_by(username=username).first()
+        if existing_user:
+            return jsonify({"error": "用户名已被使用"}), 409
+            
+        # 检查邮箱是否已存在
+        existing_email = User.query.filter_by(email=email).first()
+        if existing_email:
+            return jsonify({"error": "邮箱已被注册"}), 409
+            
+        # 验证用户名不能为admin
+        if username.lower() == 'admin':
+            return jsonify({"error": "不能使用'admin'作为用户名"}), 400
+            
+        # 创建新用户
+        hashed_password = generate_password_hash(password)
+        new_user = User(
+            username=username,
+            email=email,
+            password=hashed_password,
+            role='user'
+        )
+        
+        # 保存到数据库
+        db.session.add(new_user)
+        db.session.commit()
+        
+        return jsonify({"message": "注册成功", "username": username}), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"用户注册错误: {str(e)}")
+        return jsonify({"error": "注册过程中发生错误"}), 500
+
+
 
 if __name__ == '__main__':
     with app.app_context():

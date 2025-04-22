@@ -1,28 +1,21 @@
 ﻿import pymysql
 pymysql.install_as_MySQLdb()
-
-# 添加warnings过滤
 import warnings
-# 忽略LangChain的deprecation警告
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
 warnings.filterwarnings("ignore", message="As of langchain-core 0.3.0")
 warnings.filterwarnings("ignore", message="deprecated", module="langchain")
-# 添加更多过滤器
 warnings.filterwarnings("ignore", category=UserWarning, module="langchain")
-# 忽略所有LangChainDeprecationWarning
 try:
     from langchain.warnings import LangChainDeprecationWarning
     warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 except ImportError:
     pass
-# 忽略pydantic相关警告
 warnings.filterwarnings("ignore", message=".*pydantic.*")
-
-from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory, redirect, url_for
-from flask_session import Session  # 添加 Flask-Session 导入
+from flask import Flask, request, jsonify, Response, render_template, stream_with_context, session, send_from_directory, redirect
+from flask_session import Session
 from ollama import Client
 import os
-import fitz  # PyMuPDF
+import fitz
 from docx import Document
 import markdown
 import ebooklib
@@ -34,24 +27,17 @@ from functools import wraps
 import json
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-import shutil
 import re
-from sklearn.metrics.pairwise import cosine_similarity
 from flask_migrate import Migrate
-from urllib.parse import quote
 import traceback
-import string
 import time
 import sqlalchemy.exc
 from sqlalchemy import inspect
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.llms import Ollama
 from langchain_ollama import OllamaEmbeddings
-from typing import List, Dict, Any
 import pickle
-from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-import copy
 import tempfile
 from langchain_core.prompts import PromptTemplate
 from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
@@ -59,12 +45,9 @@ from langchain_chroma import Chroma
 import unicodedata
 import sys
 import spacy
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 import math
-import numpy as np
-from collections import Counter
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
@@ -2807,7 +2790,6 @@ def generate_semantic_summary(doc_id, query=None):
             error_message = f"生成摘要时发生错误: {str(e)}"
             print(error_message)
             yield "\n\n" + error_message
-
     except Exception as e:
         print(f"生成语义摘要失败: {str(e)}")
         traceback.print_exc()
@@ -5497,6 +5479,123 @@ def preprocess_search_query(query):
         
     # 返回原始查询
     return query
+
+@app.route('/preview/<int:summary_id>', methods=['GET'])
+@login_required
+def preview_document(summary_id):
+    """预览原文内容"""
+    try:
+        # 获取摘要记录
+        summary = DocumentSummary.query.get(summary_id)
+        if not summary:
+            return render_template('404.html', message=f"未找到ID为 {summary_id} 的摘要记录"), 404
+            
+        # 检查用户权限 - 只有管理员和记录所有者可以预览
+        current_user_id = session.get('user_id')
+        current_user = User.query.get(current_user_id)
+        if current_user.id != summary.user_id and current_user.role != 'admin':
+            return render_template('error.html', message="您无权查看此文档"), 403
+        
+        # 获取文件类型
+        file_ext = summary.file_name.split('.')[-1].lower() if '.' in summary.file_name else 'txt'
+        file_type = 'txt'  # 默认类型
+        
+        # 判断文件类型
+        if file_ext in ['pdf']:
+            file_type = 'pdf'
+        elif file_ext in ['docx', 'doc']:
+            file_type = 'docx'
+        elif file_ext in ['md', 'markdown']:
+            file_type = 'md'
+        elif file_ext in ['epub']:
+            file_type = 'epub'
+        
+        # 处理分页请求
+        page = request.args.get('page', 1, type=int)
+        
+        # 获取文件内容
+        file_content = get_file_content(summary_id)
+        
+        # 确保内容不为空
+        if not file_content:
+            return render_template('error.html', message="无法获取文件内容"), 404
+        
+        # 处理二进制内容 - 尝试解码为文本
+        if isinstance(file_content, bytes):
+            try:
+                # 尝试使用UTF-8解码
+                content = file_content.decode('utf-8')
+            except UnicodeDecodeError:
+                # 如果UTF-8失败，尝试其他常见编码
+                encodings = ['latin-1', 'gbk', 'gb2312', 'iso-8859-1']
+                content = None
+                for encoding in encodings:
+                    try:
+                        content = file_content.decode(encoding)
+                        print(f"成功使用 {encoding} 解码文件内容")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                
+                # 如果所有编码都失败，使用latin-1（不会引发解码错误）
+                if not content:
+                    content = file_content.decode('latin-1')
+                    print("使用 latin-1 兜底解码文件内容")
+        else:
+            # 已经是文本格式
+            content = file_content
+            
+        # 特殊文件类型处理
+        if file_type == 'md' and not content.startswith('#'):
+            # 检查是否为二进制形式的markdown内容（以b"开头）
+            if content.startswith('b"') or content.startswith("b'"):
+                try:
+                    # 尝试解析Python字符串表示
+                    content = content[2:-1]  # 移除b"和最后的"
+                    # 处理转义序列
+                    content = content.encode('latin-1').decode('unicode_escape')
+                    print("成功解析二进制字符串表示的markdown内容")
+                except Exception as e:
+                    print(f"解析二进制字符串表示时出错: {str(e)}")
+        
+        # AJAX请求返回JSON格式的页面内容
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            # 简单的分页处理，每页5000个字符
+            page_size = 5000
+            content_parts = [content[i:i+page_size] for i in range(0, len(content), page_size)]
+            total_pages = len(content_parts)
+            
+            if page > total_pages:
+                return jsonify({'error': '页面不存在'}), 404
+            
+            current_part = content_parts[page-1] if page <= total_pages else ''
+            
+            return jsonify({
+                'content': current_part,
+                'current_page': page,
+                'total_pages': total_pages,
+                'has_more': page < total_pages,
+                'content_length': len(content)
+            })
+        
+        # 非AJAX请求返回完整页面
+        # 简单的分页处理，每页5000个字符
+        page_size = 5000
+        initial_content = content[:page_size] if content else ''
+        total_pages = (len(content) + page_size - 1) // page_size if content else 1
+        
+        return render_template(
+            'preview.html',
+            summary=summary,
+            filename=summary.file_name,
+            file_type=file_type,
+            initial_content=initial_content,
+            total_pages=total_pages
+        )
+    except Exception as e:
+        print(f"预览文件错误: {str(e)}")
+        traceback.print_exc()
+        return render_template('error.html', message=f"预览文件时出错: {str(e)}"), 500
 
 if __name__ == '__main__':
     with app.app_context():

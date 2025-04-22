@@ -527,81 +527,119 @@
                     tocContainer.style.display = 'none';
                 }
             });
+
+            // 处理二进制字符串表示的内容
+            function processBinaryStringContent(content) {
+                if (typeof content === 'string' && (content.startsWith('b"') || content.startsWith("b'"))) {
+                    try {
+                        // 移除b"和结尾的"
+                        let processedContent = content.substring(2, content.length - 1);
+                        
+                        // 替换Python转义序列
+                        processedContent = processedContent
+                            .replace(/\\r\\n/g, '\n')
+                            .replace(/\\t/g, '\t')
+                            .replace(/\\n/g, '\n')
+                            .replace(/\\'/g, "'")
+                            .replace(/\\"/g, '"');
+                            
+                        // 处理UTF-8编码的字符
+                        processedContent = processedContent.replace(/\\x([0-9a-fA-F]{2})/g, function(match, p1) {
+                            return String.fromCharCode(parseInt(p1, 16));
+                        });
+                        
+                        // 处理Unicode转义序列
+                        processedContent = processedContent.replace(/\\u([0-9a-fA-F]{4})/g, function(match, p1) {
+                            return String.fromCharCode(parseInt(p1, 16));
+                        });
+                        
+                        console.log("成功处理二进制字符串表示");
+                        return processedContent;
+                    } catch (error) {
+                        console.error("处理二进制字符串表示失败:", error);
+                        return content;
+                    }
+                }
+                return content;
+            }
             
-            // 生成目录
+            // 改进的目录生成函数
             function generateTOC() {
                 if (fileType !== 'md') return;
                 
-                const headings = container.querySelectorAll('h1, h2, h3');
-                if (headings.length === 0) {
-                    tocList.innerHTML = '<li class="toc-item">没有找到目录条目</li>';
-                    return;
-                }
+                // 清空目录列表
+                tocList.innerHTML = '<li class="toc-item">加载中...</li>';
                 
-                tocList.innerHTML = '';
-                
-                headings.forEach((heading, index) => {
-                    // 为标题添加ID方便跳转
-                    const headingId = `heading-${index}`;
-                    heading.id = headingId;
+                // 延迟执行确保DOM已完全渲染
+                setTimeout(() => {
+                    // 获取所有标题元素
+                    const headings = container.querySelectorAll('h1, h2, h3, h4, h5, h6');
+                    if (headings.length === 0) {
+                        tocList.innerHTML = '<li class="toc-item">没有找到目录条目</li>';
+                        return;
+                    }
                     
-                    const level = parseInt(heading.tagName.substring(1));
-                    const tocItem = document.createElement('li');
-                    tocItem.className = `toc-item level-${level}`;
-                    tocItem.textContent = heading.textContent;
-                    tocItem.dataset.target = headingId;
+                    tocList.innerHTML = '';
                     
-                    tocItem.addEventListener('click', function() {
-                        // 移除其他激活状态
-                        document.querySelectorAll('.toc-item').forEach(item => {
-                            item.classList.remove('active');
+                    // 为每个标题创建目录项
+                    headings.forEach((heading, index) => {
+                        // 为标题添加ID方便跳转
+                        const headingId = `heading-${index}`;
+                        heading.id = headingId;
+                        
+                        // 获取标题级别
+                        const level = parseInt(heading.tagName.substring(1));
+                        
+                        // 创建目录项
+                        const tocItem = document.createElement('li');
+                        tocItem.className = `toc-item level-${level}`;
+                        tocItem.textContent = heading.textContent;
+                        tocItem.dataset.target = headingId;
+                        
+                        // 添加点击事件
+                        tocItem.addEventListener('click', function() {
+                            // 移除其他活动状态
+                            document.querySelectorAll('.toc-item').forEach(item => {
+                                item.classList.remove('active');
+                            });
+                            
+                            // 添加活动状态
+                            this.classList.add('active');
+                            
+                            // 平滑滚动到目标位置
+                            const targetHeading = document.getElementById(this.dataset.target);
+                            if (targetHeading) {
+                                targetHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }
+                            
+                            // 移动端自动关闭目录
+                            if (window.innerWidth < 992) {
+                                tocContainer.style.display = 'none';
+                            }
                         });
                         
-                        // 添加激活状态
-                        this.classList.add('active');
-                        
-                        // 滚动到目标位置
-                        const targetHeading = document.getElementById(this.dataset.target);
-                        if (targetHeading) {
-                            targetHeading.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }
-                        
-                        // 移动端自动关闭目录
-                        if (window.innerWidth < 992) {
-                            tocContainer.style.display = 'none';
-                        }
+                        // 添加到目录列表
+                        tocList.appendChild(tocItem);
                     });
                     
-                    tocList.appendChild(tocItem);
-                });
+                    console.log(`目录生成完成，共 ${headings.length} 项`);
+                }, 500); // 延迟500ms确保DOM已完全渲染
             }
             
-            // 如果是markdown文件，进行渲染
-            if (fileType === 'md') {
-                renderMarkdown();
-            }
-            
-            // 更新内容长度显示
-            if (container) {
-                contentLength.textContent = container.textContent.length;
-                console.log('初始内容:', container.textContent.substring(0, 200));
-            }
-            
-            let currentPage = 1;
-            let isLoading = false;
-            let hasMore = totalPages > 1;
-            
-            // 更新进度条
-            function updateProgress(current, total) {
-                const progress = (current / total) * 100;
-                progressBar.style.width = `${progress}%`;
-            }
-            
-            // 渲染markdown内容
+            // 改进的Markdown渲染函数
             function renderMarkdown() {
                 try {
                     if (fileType === 'md') {
-                        const originalText = container.textContent || '';
+                        // 获取原始文本
+                        let originalText = container.textContent || '';
+                        
+                        // 处理可能的二进制字符串表示
+                        originalText = processBinaryStringContent(originalText);
+                        
+                        // 保存处理后的原始文本用于后续加载更多内容
+                        container.setAttribute('data-original-text', originalText);
+                        
+                        // 渲染Markdown为HTML
                         const renderedHtml = md.render(originalText);
                         container.innerHTML = renderedHtml;
                         
@@ -611,12 +649,14 @@
                         });
                         
                         // 生成目录
-                        setTimeout(generateTOC, 100);
+                        generateTOC();
                         
                         console.log('Markdown渲染完成');
                     }
                 } catch (error) {
                     console.error('Markdown渲染失败:', error);
+                    // 失败时显示原始文本
+                    container.innerHTML = `<pre style="white-space: pre-wrap;">${originalText}</pre>`;
                 }
             }
             
@@ -643,9 +683,12 @@
                     
                     if (data.content) {
                         if (fileType === 'md') {
+                            // 对于markdown文件，先处理可能的二进制字符串表示
+                            let newContent = processBinaryStringContent(data.content);
+                            
                             // 对于markdown文件，先收集所有内容再一次性渲染
                             const currentText = container.getAttribute('data-original-text') || container.textContent;
-                            const newText = currentText + '\n' + data.content;
+                            const newText = currentText + '\n' + newContent;
                             container.setAttribute('data-original-text', newText);
                             
                             // 渲染markdown
@@ -660,8 +703,11 @@
                             // 重新生成目录
                             generateTOC();
                         } else {
+                            // 处理可能的二进制字符串表示
+                            let processedContent = processBinaryStringContent(data.content);
+                            
                             // 非markdown文件直接添加内容
-                            container.innerHTML += '\n' + data.content;
+                            container.innerHTML += '\n' + processedContent;
                         }
                         
                         currentPage = data.current_page;
@@ -689,11 +735,47 @@
                 }
             }
             
+            // 更新进度条
+            function updateProgress(current, total) {
+                const progress = (current / total) * 100;
+                progressBar.style.width = `${progress}%`;
+            }
+            
+            // 处理初始内容
+            function processInitialContent() {
+                // 如果有内容且是二进制字符串表示，先处理它
+                if (container.textContent && (container.textContent.startsWith('b"') || container.textContent.startsWith("b'"))) {
+                    let processedContent = processBinaryStringContent(container.textContent);
+                    if (fileType === 'md') {
+                        // 对于Markdown，保存处理后的内容用于渲染
+                        container.setAttribute('data-original-text', processedContent);
+                    } else {
+                        // 对于其他类型，直接替换显示内容
+                        container.textContent = processedContent;
+                    }
+                }
+                
+                // 如果是markdown文件，进行渲染
+                if (fileType === 'md') {
+                    renderMarkdown();
+                }
+                
+                // 更新内容长度显示
+                if (container) {
+                    contentLength.textContent = container.textContent.length;
+                    console.log('初始内容:', container.textContent.substring(0, 200));
+                }
+            }
+            
+            let currentPage = 1;
+            let isLoading = false;
+            let hasMore = totalPages > 1;
+            
             // 监听滚动事件，高亮当前查看的标题
             window.addEventListener('scroll', function() {
                 if (fileType !== 'md') return;
                 
-                const headings = Array.from(document.querySelectorAll('h1, h2, h3'));
+                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'));
                 if (headings.length === 0) return;
                 
                 // 找到当前可见的标题
@@ -745,10 +827,8 @@
                 }
             });
             
-            // 保存原始文本用于markdown渲染
-            if (fileType === 'md') {
-                container.setAttribute('data-original-text', container.textContent);
-            }
+            // 初始化处理
+            processInitialContent();
         });
     </script>
 </body>

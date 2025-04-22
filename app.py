@@ -1,6 +1,23 @@
 ﻿import pymysql
 pymysql.install_as_MySQLdb()
 
+# 添加warnings过滤
+import warnings
+# 忽略LangChain的deprecation警告
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
+warnings.filterwarnings("ignore", message="As of langchain-core 0.3.0")
+warnings.filterwarnings("ignore", message="deprecated", module="langchain")
+# 添加更多过滤器
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain")
+# 忽略所有LangChainDeprecationWarning
+try:
+    from langchain.warnings import LangChainDeprecationWarning
+    warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
+except ImportError:
+    pass
+# 忽略pydantic相关警告
+warnings.filterwarnings("ignore", message=".*pydantic.*")
+
 from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory, redirect, url_for
 from flask_session import Session  # 添加 Flask-Session 导入
 from ollama import Client
@@ -26,7 +43,7 @@ import traceback
 import string
 import time
 import sqlalchemy.exc
-from sqlalchemy import inspect  # 修改为从sqlalchemy直接导入inspect
+from sqlalchemy import inspect
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.llms import Ollama
 from langchain_ollama import OllamaEmbeddings
@@ -1756,13 +1773,12 @@ def delete_summary(summary_id):
         if current_user.id != summary.user_id and current_user.role != 'admin':
             return jsonify({'error': '您无权删除此摘要'}), 403
         
-        try:
-            # 如果有向量存储，先删除
+        # 如果有向量存储，先删除
         if summary.has_vector_store and summary.chroma_collection:
             try:
                 print(f"尝试删除向量存储: {summary.chroma_collection}")
                 collection_name = summary.chroma_collection
-                    persist_directory = "chroma_db"  # 硬编码目录路径，与RAGTools中一致
+                persist_directory = "chroma_db"  # 硬编码目录路径，与RAGTools中一致
                 
                 # 方法1: 首先尝试使用PersistentClient直接删除集合
                 try:
@@ -1773,14 +1789,14 @@ def delete_summary(summary_id):
                 except Exception as e:
                     print(f"通过PersistentClient删除集合失败: {str(e)}")
                     
-                        # 方法2: 尝试使用Chroma接口删除
+                    # 方法2: 尝试使用Chroma接口删除
                     try:
-                            print("方法2: 使用Chroma接口删除集合")
-                            from langchain_chroma import Chroma
-                            from langchain_ollama import OllamaEmbeddings
+                        print("方法2: 使用Chroma接口删除集合")
+                        from langchain_chroma import Chroma
+                        from langchain_ollama import OllamaEmbeddings
                         
                         embeddings = OllamaEmbeddings(
-                                model="huihui_ai/bge-small-zh-v1.5",
+                            model="huihui_ai/bge-small-zh-v1.5",
                             base_url="http://localhost:11434"
                         )
                         
@@ -1790,55 +1806,56 @@ def delete_summary(summary_id):
                             collection_name=collection_name
                         )
                         
-                            # 尝试方法2.1: 使用Chroma对象的delete_collection方法
+                        # 尝试方法2.1: 使用Chroma对象的delete_collection方法
                         if hasattr(chroma_db, 'delete_collection'):
                             chroma_db.delete_collection()
-                                print("成功通过Chroma对象删除集合")
+                            print("成功通过Chroma对象删除集合")
                         else:
                             print("Chroma实例没有delete_collection方法")
                             
-                                # 尝试方法2.2: 使用Chroma对象的_client的delete_collection方法
-                                if hasattr(chroma_db._client, 'delete_collection'):
-                                    chroma_db._client.delete_collection(collection_name)
-                                    print("成功通过chroma_db._client删除集合")
-                                else:
-                                    print("chroma_db._client没有delete_collection方法")
+                            # 尝试方法2.2: 使用Chroma对象的_client的delete_collection方法
+                            if hasattr(chroma_db._client, 'delete_collection'):
+                                chroma_db._client.delete_collection(collection_name)
+                                print("成功通过chroma_db._client删除集合")
+                            else:
+                                print("chroma_db._client没有delete_collection方法")
                     except Exception as e2:
-                            print(f"通过Chroma接口删除集合失败: {str(e2)}")
+                        print(f"通过Chroma接口删除集合失败: {str(e2)}")
                 
-                    print(f"已尝试所有可能的方法删除向量存储: {collection_name}")
+                print(f"已尝试所有可能的方法删除向量存储: {collection_name}")
             except Exception as e:
-                    print(f"删除向量存储时发生未处理的异常: {str(e)}")
-                    traceback.print_exc()
+                print(f"删除向量存储时发生未处理的异常: {str(e)}")
+                traceback.print_exc()
         
         # 删除关联的文件映射记录
-        mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
-        if mappings:
-            print(f"删除 {len(mappings)} 个关联的文件映射记录")
-            for mapping in mappings:
-                db.session.delete(mapping)
-        else:
-            print("没有找到关联的文件映射记录")
+        try:
+            file_mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
+            for file_mapping in file_mappings:
+                db.session.delete(file_mapping)
+            print(f"删除了 {len(file_mappings)} 条文件映射记录")
+        except Exception as e:
+            print(f"删除文件映射记录时出错: {str(e)}")
         
-        # 删除摘要记录
-        print("删除摘要记录")
+        # 删除关联的文件块记录
+        try:
+            chunks = FileChunk.query.filter_by(document_id=summary_id).all()
+            for chunk in chunks:
+                db.session.delete(chunk)
+            print(f"删除了 {len(chunks)} 条文件块记录")
+        except Exception as e:
+            print(f"删除文件块记录时出错: {str(e)}")
+        
+        # 最后删除摘要记录
         db.session.delete(summary)
-        
-        # 提交事务
         db.session.commit()
-        print(f"摘要删除成功")
+        print(f"成功删除摘要记录: {summary_id}")
         
-        return jsonify({'message': '删除成功'})
-            
-    except Exception as e:
-        print(f"删除过程中出错: {str(e)}")
-        traceback.print_exc()
-        db.session.rollback()
-            return jsonify({'error': f'删除失败: {str(e)}'}), 500
-    
+        return jsonify({'success': True, 'message': f'成功删除摘要(ID: {summary_id})'}), 200
+        
     except Exception as e:
         print(f"删除摘要时发生未处理的异常: {str(e)}")
         traceback.print_exc()
+        db.session.rollback()
         return jsonify({'error': f'删除失败: {str(e)}'}), 500
 
 @app.route('/favicon.ico')
@@ -4398,22 +4415,22 @@ class RAGTools:
             # 获取向量存储
             collection_name = f"doc_{doc_id}"
             try:
-            db = Chroma(
-                persist_directory=self.persist_directory,
-                embedding_function=self.embeddings,
-                collection_name=collection_name
-            )
-            
-            # 创建检索器 - 请求比所需更多的结果以便后处理
-            retriever = db.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": top_k * 2} # 获取2倍于所需结果数量的候选项
-            )
-            
-            # 执行检索
-            print(f"执行向量搜索，查询：'{enhanced_query}'，文档ID：{doc_id}，初始top_k：{top_k*2}")
-            docs = retriever.get_relevant_documents(enhanced_query)
-            print(f"检索到 {len(docs)} 个相关文档")
+                db = Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embeddings,
+                    collection_name=collection_name
+                )
+                
+                # 创建检索器 - 请求比所需更多的结果以便后处理
+                retriever = db.as_retriever(
+                    search_type="similarity",
+                    search_kwargs={"k": top_k * 2} # 获取2倍于所需结果数量的候选项
+                )
+                
+                # 执行检索
+                print(f"执行向量搜索，查询：'{enhanced_query}'，文档ID：{doc_id}，初始top_k：{top_k*2}")
+                docs = retriever.get_relevant_documents(enhanced_query)
+                print(f"检索到 {len(docs)} 个相关文档")
             except Exception as e:
                 print(f"获取Chroma集合或执行检索时出错: {str(e)}")
                 traceback.print_exc()
@@ -4510,17 +4527,17 @@ class RAGTools:
             # 获取向量存储
             collection_name = f"doc_{doc_id}"
             try:
-            db = Chroma(
-                persist_directory=self.persist_directory,
-                embedding_function=self.embeddings,
-                collection_name=collection_name
-            )
-            
-            # 创建检索器
-            retriever = db.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": 3}
-            )
+                db = Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embeddings,
+                    collection_name=collection_name
+                )
+                
+                # 创建检索器
+                retriever = db.as_retriever(
+                    search_type="similarity",
+                    search_kwargs={"k": 3}
+                )
             except Exception as e:
                 print(f"获取Chroma集合或创建检索器时出错: {str(e)}")
                 traceback.print_exc()
@@ -4962,7 +4979,7 @@ def search_redirect():
                 display_name = summary.original_filename or summary.display_filename or summary.file_name
                 
                 # 只显示文件名，不显示路径
-                    display_name = os.path.basename(display_name)
+                display_name = os.path.basename(display_name)
                 
                 # 提取匹配文本摘录
                 match_excerpt = best_match_text

@@ -3,7 +3,6 @@ pymysql.install_as_MySQLdb()
 
 from flask import Flask, request, jsonify, Response, render_template, stream_with_context, send_file, make_response, session, send_from_directory, redirect, url_for
 from flask_session import Session  # 添加 Flask-Session 导入
-import asyncio
 from ollama import Client
 import os
 import fitz  # PyMuPDF
@@ -12,42 +11,23 @@ import markdown
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
-import mysql.connector
 import uuid
 from datetime import datetime, timedelta
-import jwt
 from functools import wraps
-from werkzeug.utils import secure_filename
-from flask_jwt_extended import (
-    JWTManager, jwt_required, get_jwt_identity, create_access_token,
-    exceptions as jwt_exceptions
-)
 import json
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 import shutil
-import requests
 import re
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
 from flask_migrate import Migrate
-from io import BytesIO
 from urllib.parse import quote
 import traceback
-from sklearn.decomposition import LatentDirichletAllocation
-from gensim import corpora, models
-from gensim.models.coherencemodel import CoherenceModel
 import string
-import PyPDF2  # 添加 PyPDF2 导入
 import time
 import sqlalchemy.exc
 from sqlalchemy import inspect  # 修改为从sqlalchemy直接导入inspect
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredFileLoader
-from langchain.chains import RetrievalQA
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.llms import Ollama
 from langchain_ollama import OllamaEmbeddings
 from typing import List, Dict, Any
@@ -55,18 +35,21 @@ import pickle
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import copy
-import nltk
-from time import sleep
 import tempfile
-from langchain.chains.conversational_retrieval.base import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from langchain.prompts import PromptTemplate
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from langchain_core.prompts import PromptTemplate
+from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain_chroma import Chroma
-from chromadb import PersistentClient
-import urllib.parse
 import unicodedata
 import sys
+import spacy
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from rank_bm25 import BM25Okapi
+import math
+import numpy as np
+from collections import Counter
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
 app = Flask(__name__, static_folder='static')
 UPLOAD_FOLDER = 'uploads'
@@ -573,7 +556,6 @@ def read_pdf(file_path):
                 
                 # 创建线程池
                 from concurrent.futures import ThreadPoolExecutor
-                from threading import Lock
                 
                 # 创建一个锁用于同步写入
                 text_lock = Lock()
@@ -1757,29 +1739,30 @@ def get_summary_detail(summary_id):
 
 @app.route('/summaries/<int:summary_id>', methods=['DELETE'])
 def delete_summary(summary_id):
-    """删除指定摘要"""
     try:
-        print(f"\n=== 开始删除摘要 ID: {summary_id} ===")
-        
-        # 首先查找摘要记录
+        # 获取要删除的摘要
         summary = DocumentSummary.query.get(summary_id)
         if not summary:
             error_msg = f"未找到ID为 {summary_id} 的摘要记录"
             print(error_msg)
             return jsonify({'error': error_msg}), 404
             
-        print(f"找到摘要记录: {summary.file_name}")
+        # 检查用户权限 - 只有管理员和记录所有者可以删除
+        current_user_id = session.get('user_id')
+        if not current_user_id:
+            return jsonify({'error': '用户未登录'}), 401
+            
+        current_user = User.query.get(current_user_id)
+        if current_user.id != summary.user_id and current_user.role != 'admin':
+            return jsonify({'error': '您无权删除此摘要'}), 403
         
-        # 删除关联的Chroma向量存储
+        try:
+            # 如果有向量存储，先删除
         if summary.has_vector_store and summary.chroma_collection:
             try:
                 print(f"尝试删除向量存储: {summary.chroma_collection}")
                 collection_name = summary.chroma_collection
-                persist_directory = "chroma_db"
-                
-                # 导入必要的库
-                from langchain_chroma import Chroma
-                from chromadb import PersistentClient
+                    persist_directory = "chroma_db"  # 硬编码目录路径，与RAGTools中一致
                 
                 # 方法1: 首先尝试使用PersistentClient直接删除集合
                 try:
@@ -1787,21 +1770,19 @@ def delete_summary(summary_id):
                     client = PersistentClient(path=persist_directory)
                     client.delete_collection(collection_name)
                     print(f"成功通过PersistentClient删除集合 {collection_name}")
-                    
                 except Exception as e:
                     print(f"通过PersistentClient删除集合失败: {str(e)}")
                     
-                    # 方法2: 通过Chroma实例删除集合
+                        # 方法2: 尝试使用Chroma接口删除
                     try:
-                        print("方法2: 使用Chroma实例删除集合")
-                        # 使用本地Ollama嵌入模型
-                        from langchain_ollama import OllamaEmbeddings
+                            print("方法2: 使用Chroma接口删除集合")
+                            from langchain_chroma import Chroma
+                            from langchain_ollama import OllamaEmbeddings
                         
                         embeddings = OllamaEmbeddings(
-                            model="snowflake-arctic-embed2",
+                                model="huihui_ai/bge-small-zh-v1.5",
                             base_url="http://localhost:11434"
                         )
-                        print("使用本地Ollama嵌入模型删除向量存储")
                         
                         chroma_db = Chroma(
                             persist_directory=persist_directory,
@@ -1809,28 +1790,26 @@ def delete_summary(summary_id):
                             collection_name=collection_name
                         )
                         
+                            # 尝试方法2.1: 使用Chroma对象的delete_collection方法
                         if hasattr(chroma_db, 'delete_collection'):
                             chroma_db.delete_collection()
-                            print(f"成功通过Chroma实例删除集合")
+                                print("成功通过Chroma对象删除集合")
                         else:
                             print("Chroma实例没有delete_collection方法")
                             
-                            # 备用方法3: 尝试访问底层客户端
-                            if hasattr(chroma_db, '_client'):
+                                # 尝试方法2.2: 使用Chroma对象的_client的delete_collection方法
                                 if hasattr(chroma_db._client, 'delete_collection'):
                                     chroma_db._client.delete_collection(collection_name)
-                                    print(f"成功通过_client删除集合")
+                                    print("成功通过chroma_db._client删除集合")
                                 else:
                                     print("chroma_db._client没有delete_collection方法")
                     except Exception as e2:
-                        print(f"通过Chroma实例删除集合失败: {str(e2)}")
+                            print(f"通过Chroma接口删除集合失败: {str(e2)}")
                 
-                print(f"向量存储删除处理完成")
+                    print(f"已尝试所有可能的方法删除向量存储: {collection_name}")
             except Exception as e:
-                print(f"删除向量存储时出错: {str(e)}")
-                print("继续删除数据库记录")
-        else:
-            print("该摘要没有关联的向量存储或向量存储信息不完整")
+                    print(f"删除向量存储时发生未处理的异常: {str(e)}")
+                    traceback.print_exc()
         
         # 删除关联的文件映射记录
         mappings = FileMapping.query.filter_by(summary_id=summary_id).all()
@@ -1855,6 +1834,11 @@ def delete_summary(summary_id):
         print(f"删除过程中出错: {str(e)}")
         traceback.print_exc()
         db.session.rollback()
+            return jsonify({'error': f'删除失败: {str(e)}'}), 500
+    
+    except Exception as e:
+        print(f"删除摘要时发生未处理的异常: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': f'删除失败: {str(e)}'}), 500
 
 @app.route('/favicon.ico')
@@ -2363,7 +2347,6 @@ def get_default_topics(target_language=None):
 def get_embeddings_model():
     """获取统一的嵌入模型 - 使用Ollama的jina-embeddings-v2-base-zh"""
     try:
-        from langchain_ollama import OllamaEmbeddings
         
         # 使用Ollama中已安装的jina模型
         embeddings = OllamaEmbeddings(
@@ -2465,234 +2448,203 @@ def create_hybrid_vector_store(text, summary, doc_id):
 def hybrid_semantic_search(query, vector_store, content_weight=0.5, summary_weight=0.5, 
                          max_results=5, sliding_window=True, special_terms_boost=True):
     """
-    混合语义搜索，增强版
-    结合内容和摘要结果，使用可调整的权重，支持特殊术语增强和滑动窗口评估
+    改进的混合语义搜索，结合BM25关键词匹配和向量相似度搜索
     
     参数:
-        query: 用户查询
-        vector_store: 向量存储实例
-        content_weight: 内容结果的权重 (0-1)
-        summary_weight: 摘要结果的权重 (0-1)
+        query: 搜索查询
+        vector_store: 向量存储对象
+        content_weight: 内容向量的权重
+        summary_weight: 摘要向量的权重
         max_results: 返回的最大结果数
-        sliding_window: 是否使用滑动窗口评估结果连续性
+        sliding_window: 是否使用滑动窗口
         special_terms_boost: 是否对特殊术语进行增强
-    
-    返回:
-        混合和排序后的结果列表
     """
-    try:
-        if not query or not vector_store:
-            return []
+    # 1. 提取查询中的专业术语和关键词
+    nlp = spacy.load("zh_core_web_sm")
+    doc = nlp(query)
+    
+    # 提取名词短语和专业术语
+    key_terms = []
+    for chunk in doc.noun_chunks:
+        key_terms.append(chunk.text)
+    
+    # 添加更多领域术语检测，扩展专业术语库
+    domain_terms = [
+        "神经网络", "手语", "识别", "深度学习", "残差网络", "CNN", "卷积神经网络", 
+        "深度神经网络", "AI", "人工智能", "机器学习", "计算机视觉", "图像识别", 
+        "ResNet", "手势识别", "姿态估计", "手部跟踪", "特征提取", "分类器",
+        "手语翻译", "实时识别", "自然语言处理", "NLP", "语义理解", "语义分析"
+    ]
+    
+    # 词语相似度映射，处理同义词和近义词
+    term_similarity_map = {
+        "残差网络": ["ResNet", "ResidualNet", "res网络"],
+        "神经网络": ["深度神经网络", "DNN", "人工神经网络", "ANN"],
+        "手语识别": ["手语翻译", "手势识别", "手语理解"],
+        "卷积神经网络": ["CNN", "ConvNet", "卷积网络"],
+        "计算机视觉": ["CV", "视觉识别", "图像识别"]
+    }
+    
+    # 扩展查询中的关键术语，考虑近义词
+    enhanced_terms = []
+    for term in key_terms:
+        enhanced_terms.append(term)
+        # 检查每个关键词是否有相似词
+        for base_term, similar_terms in term_similarity_map.items():
+            if term in similar_terms or term == base_term:
+                # 添加相似词汇
+                enhanced_terms.extend([t for t in similar_terms if t != term])
+                enhanced_terms.append(base_term)
+    
+    # 删除重复项
+    enhanced_terms = list(set(enhanced_terms))
+    print(f"扩展后的查询关键词: {enhanced_terms}")
+    
+    found_terms = []
+    
+    # 扩展查询匹配，增加术语识别能力
+    for term in domain_terms:
+        if term in query:
+            found_terms.append(term)
+            # 添加该术语的所有相似词
+            for base_term, similar_terms in term_similarity_map.items():
+                if term == base_term or term in similar_terms:
+                    found_terms.extend(similar_terms)
+                    found_terms.append(base_term)
+    
+    # 删除重复项
+    found_terms = list(set(found_terms))
+    
+    # 检测更复杂的领域概念组合
+    complex_concepts = {
+        "手语识别系统": ["手语", "识别", "系统"],
+        "基于残差网络的识别": ["基于", "残差", "网络", "识别"],
+        "神经网络手语识别": ["神经", "网络", "手语", "识别"],
+        "深度学习手语翻译": ["深度", "学习", "手语", "翻译"]
+    }
+    
+    # 检查是否存在复杂概念的成分词
+    for concept, components in complex_concepts.items():
+        if all(component in query.lower() for component in components):
+            print(f"检测到复杂概念: {concept}")
+            found_terms.append(concept)
+    
+    # 2. BM25关键词匹配，增强对关键术语的重视
+    bm25_results = []
+    documents = vector_store.get("documents")
+    if documents:
+        # 为关键术语构建增强的文档表示
+        enhanced_docs = []
+        for doc in documents:
+            # 原始文档
+            doc_text = doc
             
-        # 规范化权重
-        total = content_weight + summary_weight
-        if total == 0:
-            content_weight, summary_weight = 0.5, 0.5
-        else:
-            content_weight = content_weight / total
-            summary_weight = summary_weight / total
-        
-        print(f"混合搜索: 内容权重={content_weight:.2f}, 摘要权重={summary_weight:.2f}")
-        
-        # 原始查询
-        original_query = query
-        
-        # 1. 特殊术语增强
-        enhanced_query = query
-        if special_terms_boost:
-            # 识别查询中的特殊术语
-            special_terms = [
-                # 技术相关术语
-                "API", "REST", "JSON", "HTTP", "GET", "POST", "PUT", "DELETE",
-                "Python", "JavaScript", "TypeScript", "React", "Vue", "Angular",
-                "SQL", "NoSQL", "MongoDB", "Firebase", "AWS", "Azure", "GCP",
-                "Docker", "Kubernetes", "微服务", "serverless", "函数计算",
-                
-                # 商业术语
-                "ROI", "KPI", "OKR", "营销", "销售", "客户", "用户", "市场",
-                "业务", "战略", "计划", "预算", "收入", "成本", "利润",
-                
-                # 常见专业领域
-                "医疗", "金融", "教育", "法律", "科技", "制造", "物流", "零售",
-                "保险", "银行", "证券", "投资"
-            ]
+            # 计算关键术语在文档中的出现次数
+            term_counts = {}
+            for term in found_terms + enhanced_terms:
+                count = doc_text.lower().count(term.lower())
+                if count > 0:
+                    term_counts[term] = count
             
-            # 中文特殊术语
-            chinese_terms = [
-                "人工智能", "机器学习", "深度学习", "神经网络", "大数据", "云计算",
-                "区块链", "物联网", "5G", "虚拟现实", "增强现实", "混合现实",
-                "数字化转型", "智能制造", "智慧城市", "电子商务", "移动支付"
-            ]
-            special_terms.extend(chinese_terms)
+            # 根据术语出现次数增强文档表示
+            enhanced_doc = doc_text
+            for term, count in term_counts.items():
+                # 对重要术语进行加权增强
+                if count > 0:
+                    # 最多重复添加3次以避免过度膨胀
+                    repeat_count = min(count, 3)
+                    term_addition = f" {term}" * repeat_count
+                    enhanced_doc += term_addition
             
-            # 检查查询中是否包含特殊术语
-            query_terms = set(re.findall(r'\b\w+\b', query))
+            enhanced_docs.append(enhanced_doc)
+            
+        # 使用增强的文档集进行BM25匹配
+        tokenized_corpus = [doc.split() for doc in enhanced_docs]
+        bm25 = BM25Okapi(tokenized_corpus)
+        
+        # 将查询分词 - 增加对找到的术语的权重
+        enriched_query = " ".join(key_terms + found_terms + enhanced_terms)
+        tokenized_query = enriched_query.split()
+        print(f"增强的BM25查询: {enriched_query}")
+        
+        bm25_scores = bm25.get_scores(tokenized_query)
+        
+        # 标准化BM25分数
+        if max(bm25_scores) > 0:
+            bm25_scores = [score/max(bm25_scores) for score in bm25_scores]
+    
+    # 3. 向量相似度搜索
+    embeddings = generate_embeddings(query)
+    vector_results = vector_store.similarity_search_by_vector(
+        embeddings, 
+        k=max_results*3  # 增加检索数量确保不遗漏相关结果
+    )
+    
+    # 4. 混合得分计算
+    final_results = []
+    for i, result in enumerate(vector_results):
+        if i < len(bm25_scores):
+            # 计算向量得分
+            content_score = result.content_score if hasattr(result, 'content_score') else 0
+            summary_score = result.summary_score if hasattr(result, 'summary_score') else 0
+            vector_score = content_weight * content_score + summary_weight * summary_score
+            
+            # 提取文档文本进行术语匹配分析
+            doc_text = result.page_content.lower()
+            
+            # 混合得分，增加关键术语权重
+            term_boost = 0
             matched_terms = []
             
-            for term in special_terms:
-                # 对于中文术语，直接检查包含关系
-                if any(char >= '\u4e00' and char <= '\u9fff' for char in term):
-                    if term in query:
-                        matched_terms.append(term)
-                # 对于英文术语，检查完整单词匹配
-                elif term.lower() in [t.lower() for t in query_terms]:
-                    matched_terms.append(term)
-            
-            # 如果找到特殊术语，增强查询
-            if matched_terms:
-                term_weights = {term: 2.0 for term in matched_terms}  # 为特殊术语设置权重
-                
-                # 构建增强查询，添加特殊术语的重要性
-                enhanced_parts = []
-                for term in matched_terms:
-                    enhanced_parts.append(f"{term}^{term_weights[term]}")
-                
-                # 将增强部分添加到原始查询中
-                enhanced_query = f"{query} {' '.join(enhanced_parts)}"
-                print(f"查询增强: 原始查询='{query}' -> 增强查询='{enhanced_query}'")
-                print(f"匹配到的特殊术语: {matched_terms}")
-        
-        # 2. 内容搜索（搜索文本块）
-        content_results = []
-        try:
-            # 使用增强查询进行内容搜索
-            content_results = vector_store.similarity_search_with_score(
-                enhanced_query,
-                k=max(10, max_results * 2)  # 获取更多候选结果用于后续处理
-            )
-            print(f"内容搜索返回 {len(content_results)} 个结果")
-        except Exception as e:
-            print(f"内容搜索出错: {str(e)}")
-        
-        # 3. 摘要搜索（搜索文档摘要）
-        summary_results = []
-        try:
-            # 对摘要使用原始查询，因为摘要已经是概括性的
-            summary_results = vector_store.similarity_search_with_score(
-                original_query,
-                k=max(10, max_results * 2),
-                filter={"is_summary": True}
-            )
-            print(f"摘要搜索返回 {len(summary_results)} 个结果")
-        except Exception as e:
-            print(f"摘要搜索出错: {str(e)}")
-        
-        # 4. 合并结果
-        all_results = []
-        
-        # 处理内容结果
-        for doc, score in content_results:
-            # 将分数转换为 0-1 范围的相似度（越高越好）
-            similarity = 1.0 - min(score, 1.0)
-            # 应用内容权重
-            weighted_score = similarity * content_weight
-            
-            all_results.append({
-                'document': doc,
-                'original_score': similarity,
-                'weighted_score': weighted_score,
-                'source': 'content',
-                'page_content': doc.page_content
-            })
-        
-        # 处理摘要结果
-        for doc, score in summary_results:
-            # 将分数转换为 0-1 范围
-            similarity = 1.0 - min(score, 1.0)
-            # 应用摘要权重
-            weighted_score = similarity * summary_weight
-            
-            # 为摘要结果额外增加一些权重，因为它们通常更相关
-            boost_factor = 1.15
-            weighted_score *= boost_factor
-            
-            all_results.append({
-                'document': doc,
-                'original_score': similarity,
-                'weighted_score': weighted_score,
-                'source': 'summary',
-                'page_content': doc.page_content
-            })
-        
-        # 5. 滑动窗口评估（可选）
-        if sliding_window and len(all_results) > 1:
-            # 先按原始顺序排序结果，如果有元数据标记顺序
-            ordered_results = []
-            for result in all_results:
-                doc = result['document']
-                if hasattr(doc, 'metadata') and 'chunk_index' in doc.metadata:
-                    result['chunk_index'] = doc.metadata['chunk_index']
-                    result['file_path'] = doc.metadata.get('source', '')
-                    ordered_results.append(result)
-            
-            # 按文件和块索引分组
-            grouped_results = {}
-            for result in ordered_results:
-                file_path = result.get('file_path', '')
-                if file_path not in grouped_results:
-                    grouped_results[file_path] = []
-                grouped_results[file_path].append(result)
-            
-            # 对每个文件中的块应用连续性加分
-            for file_path, results in grouped_results.items():
-                # 按块索引排序
-                sorted_results = sorted(results, key=lambda x: x.get('chunk_index', 0))
-                
-                # 应用滑动窗口评估：连续块获得额外分数
-                for i in range(len(sorted_results)):
-                    current = sorted_results[i]
-                    current_idx = current.get('chunk_index', -1)
-                    
-                    # 查找相邻块
-                    for j in range(len(sorted_results)):
-                        if i == j:
-                            continue
-                            
-                        neighbor = sorted_results[j]
-                        neighbor_idx = neighbor.get('chunk_index', -1)
+            if special_terms_boost:
+                # 检查文档中是否存在我们确定的领域术语
+                for term in found_terms + enhanced_terms:
+                    term_lower = term.lower()
+                    if term_lower in doc_text:
+                        # 根据术语重要性给予不同加权
+                        if term in found_terms:
+                            boost = 0.2  # 直接从查询中提取的术语给予更高权重
+                        else:
+                            boost = 0.1  # 扩展得到的术语给予较低权重
                         
-                        # 如果是相邻的块（差值为1），增加分数
-                        if abs(current_idx - neighbor_idx) == 1:
-                            # 相邻块加分
-                            continuity_bonus = 0.05  # 5%的相邻块奖励
-                            current['weighted_score'] += continuity_bonus
-                            print(f"应用连续性加分: 块 {current_idx} 与相邻块 {neighbor_idx} 获得 +{continuity_bonus}")
-                            
-                        # 如果是相距2个位置的块，给予较小的奖励
-                        elif abs(current_idx - neighbor_idx) == 2:
-                            small_bonus = 0.02  # 2%的近邻块奖励
-                            current['weighted_score'] += small_bonus
+                        term_boost += boost
+                        matched_terms.append(term)
                 
-                # 更新all_results中相应的结果
-                for result in sorted_results:
-                    idx = all_results.index(next(r for r in all_results if r['document'] == result['document']))
-                    all_results[idx]['weighted_score'] = result['weighted_score']
+                # 复杂概念匹配给予额外奖励
+                for concept in complex_concepts:
+                    if concept.lower() in doc_text:
+                        term_boost += 0.3  # 完整概念匹配给予更高奖励
+                        matched_terms.append(concept)
+                
+                # 手语识别特定领域匹配增强
+                if ("手语" in doc_text and "识别" in doc_text) or "手语识别" in doc_text:
+                    term_boost += 0.25
+                    matched_terms.append("手语识别")
+                
+                if "残差网络" in doc_text or "ResNet" in doc_text.lower():
+                    term_boost += 0.25
+                    matched_terms.append("残差网络/ResNet")
             
-            print("应用滑动窗口连续性评估")
-        
-        # 6. 按加权分数排序并返回前N个结果
-        sorted_results = sorted(all_results, key=lambda x: x['weighted_score'], reverse=True)
-        top_results = sorted_results[:max_results]
-        
-        # 7. 提取最终结果
-        final_results = []
-        for result in top_results:
-            doc = result['document']
+            # 输出调试信息
+            if matched_terms:
+                print(f"文档 {i} 匹配到的术语: {matched_terms}, 增强分数: {term_boost}")
+            
+            # 调整权重分配，提高术语匹配的重要性
+            # 最终得分 = 向量得分 * 0.5 + BM25得分 * 0.3 + 术语增强 * 0.2
+            final_score = vector_score * 0.5 + bm25_scores[i] * 0.3 + min(term_boost, 1.0) * 0.2
+            
+            # 限制最大分数为1.0
+            final_score = min(final_score, 1.0)
+            
             final_results.append({
-                'content': doc.page_content,
-                'metadata': doc.metadata,
-                'score': result['weighted_score'],
-                'source': result['source']
+                "document": result,
+                "score": final_score,
+                "matched_terms": matched_terms
             })
-        
-        print(f"混合搜索返回 {len(final_results)} 个最终结果")
-        return final_results
-        
-    except Exception as e:
-        error_msg = f"混合语义搜索出错: {str(e)}"
-        traceback.print_exc()
-        print(error_msg)
-        return []
+    
+    # 5. 排序并返回结果
+    final_results.sort(key=lambda x: x["score"], reverse=True)
+    return [item["document"] for item in final_results[:max_results]]
 
 def generate_semantic_summary(doc_id, query=None):
     """生成基于语义检索的摘要"""
@@ -2859,7 +2811,16 @@ def handle_semantic_search(doc_id):
                 'results': []
             }), 400
             
+        # 获取语义搜索结果
         results = semantic_search(query, doc_id)
+        
+        # 确保结果中的文件名不包含路径
+        for result in results:
+            if 'text' in result:
+                result['text'] = os.path.basename(result['text'])
+            if 'content' in result:
+                result['content'] = os.path.basename(result['content'])
+                
         return jsonify({
             'success': True,
             'results': results
@@ -2983,9 +2944,12 @@ def handle_hybrid_search(doc_id):
             # 格式化结果
             formatted_results = []
             for result in results:
+                # 确保结果显示的内容不包含路径
+                content = result.get('content', '')
+                
                 formatted_results.append({
-                    'text': result.get('content', ''),
-                    'content': result.get('content', ''),
+                    'text': content,
+                    'content': content,
                     'score': float(result.get('score', 0)),
                     'source': result.get('source', '未知'),
                     'metadata': result.get('metadata', {})
@@ -3066,12 +3030,17 @@ def search_documents():
         print(f"\n=== 搜索文档 关键词: '{query}' ===")
         print(f"查询参数: 筛选阈值={min_score_threshold}, 最大结果数={max_results}, 文本匹配启用={enable_text_match}, 混合检索={use_hybrid}")
         
+        # 使用预处理函数增强查询，特别针对手语识别和神经网络等领域术语
+        enhanced_query = preprocess_search_query(query)
+        if enhanced_query != query:
+            print(f"查询增强: '{query}' -> '{enhanced_query}'")
+        
         # 获取所有文档
         summaries = DocumentSummary.query.all()
         print(f"找到 {len(summaries)} 个文档")
         
         # 将查询转换为小写，便于文本匹配
-        query_lower = query.lower()
+        query_lower = enhanced_query.lower()
         print(f"搜索关键词(小写): '{query_lower}'")
         
         results = []
@@ -3086,7 +3055,8 @@ def search_documents():
         if use_hybrid:
             try:
                 embeddings = get_embeddings_model()
-                query_vector = embeddings.embed_query(query)
+                # 使用增强的查询生成向量，提高领域相关性
+                query_vector = embeddings.embed_query(enhanced_query)
                 can_use_vector = True
                 print("成功生成查询向量，可以使用向量搜索")
             except Exception as e:
@@ -3127,15 +3097,15 @@ def search_documents():
                         # 添加更多调试信息
                         file_name_lower = file_name.lower()
                         print(f"文件名: '{file_name}', 转小写: '{file_name_lower}'")
-                        print(f"查询词: '{query}', 转小写: '{query_lower}'")
+                        print(f"查询词: '{query}', 增强查询: '{enhanced_query}', 转小写: '{query_lower}'")
                         
                         # 尝试多种匹配方法
                         filename_match = False
                         
-                        # 1. 直接包含匹配
-                        if query_lower in file_name_lower:
+                        # 1. 直接包含匹配 - 使用原始查询
+                        if query.lower() in file_name_lower:
                             filename_match = True
-                            print(f"✓ 文件名直接匹配成功: '{query_lower}' 在 '{file_name_lower}' 中")
+                            print(f"✓ 文件名直接匹配成功: '{query.lower()}' 在 '{file_name_lower}' 中")
                         # 2. 分词后部分匹配 - 处理文件名中的分隔符
                         elif any(query_lower in part.lower() for part in re.split(r'[_\-\s.]+', file_name)):
                             filename_match = True
@@ -3331,6 +3301,9 @@ def search_documents():
                 if found_match:
                     # 使用原始文件名作为显示名称
                     display_name = summary.original_filename or summary.display_filename or summary.file_name
+                    
+                    # 只显示文件名，不显示路径
+                    display_name = os.path.basename(display_name)
                     
                     # 提取匹配文本摘录
                     match_excerpt = best_match_text
@@ -4258,315 +4231,7 @@ def ollama_text_stream(input_text, params=None, file_info=None, file_content=Non
             except Exception as e:
                 print(f"保存Summary时出错: {str(e)}")
                 traceback.print_exc()
-    except Exception as e:
-        error_msg = f"生成摘要时发生错误: {str(e)}"
-        print(error_msg)
-        traceback.print_exc()
-        yield error_msg
-
-@app.route('/download/<int:summary_id>')
-def download_document(summary_id):
-    """下载原始文档"""
-    try:
-        # 获取摘要记录
-        summary = DocumentSummary.query.get_or_404(summary_id)
         
-        # 首先检查是否有原始文本
-        if summary.original_text:
-            print(f"使用存储的原始文本下载 - summary_id: {summary_id}")
-            content = summary.original_text
-            content_type = 'text/plain; charset=utf-8'
-        else:
-            # 如果没有原始文本，尝试获取文件内容
-            print(f"尝试获取文件内容下载 - summary_id: {summary_id}")
-            content = get_file_content(summary_id)
-            if content is None:
-                return jsonify({'error': '文件内容不存在'}), 404
-            content_type = summary.mime_type or 'application/octet-stream'
-        
-        # 使用原始文件名或显示文件名
-        filename = summary.original_filename or summary.display_filename or summary.file_name
-        
-        # 创建响应
-        response = make_response(content)
-        response.headers['Content-Type'] = content_type
-        response.headers['Content-Disposition'] = f'attachment; filename={quote(filename)}'
-        return response
-        
-    except Exception as e:
-        print(f"下载文件错误: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/preview/<int:summary_id>')
-def preview_document(summary_id):
-    """在浏览器中预览文档"""
-    try:
-        # 获取摘要记录
-        summary = DocumentSummary.query.get_or_404(summary_id)
-        
-        # 使用原始文件名或显示文件名
-        filename = summary.original_filename or summary.display_filename or summary.file_name
-        
-        # 移除文件路径，只显示文件名
-        if filename and ('/' in filename or '\\' in filename):
-            filename = os.path.basename(filename)
-        
-        # 获取文件类型
-        file_type = ''
-        if '.' in filename:
-            file_type = filename.rsplit('.', 1)[1].lower()
-        
-        # 处理AJAX请求 - 用于分页加载
-        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-            page = request.args.get('page', 1, type=int)
-            page_size = request.args.get('page_size', 5000, type=int)  # 默认每页5000个字符
-            
-            # 获取文本内容 - 首先尝试使用存储的原始文本
-            text_content = summary.original_text
-            
-            # 如果原始文本不存在，则尝试从文件内容中提取
-            if not text_content:
-                print(f"没有存储的原始文本，尝试从文件内容提取文本 - summary_id: {summary_id}")
-                # 获取二进制文件内容
-                file_content = get_file_content(summary_id)
-                if not file_content:
-                    return jsonify({
-                        'error': '无法获取文件内容，文件可能已损坏或不存在',
-                        'current_page': 0,
-                        'total_pages': 0,
-                        'has_more': False,
-                        'content': ''
-                    })
-                
-                # 根据文件类型提取文本内容
-                try:
-                    # 为PDF处理创建临时文件
-                    if file_type == 'pdf':
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                            temp_file.write(file_content)
-                            temp_path = temp_file.name
-                        
-                        try:
-                            # 使用PyMuPDF处理PDF
-                            text_content = ""
-                            doc = fitz.open(temp_path)
-                            for page_num in range(len(doc)):
-                                text_content += doc[page_num].get_text()
-                            doc.close()
-                        finally:
-                            # 确保临时文件被删除
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                    elif file_type == 'docx':
-                        # 处理DOCX文件
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
-                            temp_file.write(file_content)
-                            temp_path = temp_file.name
-                        
-                        try:
-                            doc = Document(temp_path)
-                            text_content = "\n".join([para.text for para in doc.paragraphs])
-                        finally:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                    else:
-                        # 对于TXT和其他文本文件，尝试直接解码
-                        try:
-                            text_content = file_content.decode('utf-8')
-                        except UnicodeDecodeError:
-                            try:
-                                text_content = file_content.decode('latin-1')
-                            except Exception:
-                                text_content = "无法解码文件内容，请下载原文查看。"
-                except Exception as e:
-                    print(f"提取文本内容出错: {str(e)}")
-                    text_content = f"无法提取文本内容，错误: {str(e)}"
-                
-                # 如果成功提取了文本，更新数据库中的原始文本
-                if text_content and text_content != "无法解码文件内容，请下载原文查看。" and not text_content.startswith("无法提取文本内容"):
-                    try:
-                        print(f"更新数据库中的原始文本 - summary_id: {summary_id}")
-                        summary.original_text = text_content
-                        db.session.commit()
-                        print(f"成功更新原始文本 - summary_id: {summary_id}")
-                    except Exception as e:
-                        print(f"更新原始文本失败: {str(e)}")
-                        db.session.rollback()
-            
-            if not text_content:
-                text_content = "文件内容为空或无法提取文本内容。"
-            
-            # 分页
-            start = (page - 1) * page_size
-            end = start + page_size
-            page_content = text_content[start:end] if start < len(text_content) else ""
-            total_pages = (len(text_content) + page_size - 1) // page_size if text_content else 0
-            
-            # 特殊处理markdown文件，确保代码块的完整性
-            if file_type == 'md':
-                # 避免在代码块中间分割
-                if '```' in page_content:
-                    # 检查最后一个代码块是否未闭合
-                    code_blocks = page_content.split('```')
-                    if len(code_blocks) % 2 == 0:  # 奇数表示代码块未闭合
-                        # 尝试找到下一个闭合标记
-                        next_block_start = text_content.find('```', end)
-                        if next_block_start != -1:
-                            # 找到下一个闭合，扩展content到这个位置后
-                            next_block_end = text_content.find('\n', next_block_start)
-                            if next_block_end != -1:
-                                end = next_block_end + 1
-                                page_content = text_content[start:end]
-            
-            # 返回JSON格式的页面内容
-            return jsonify({
-                'content': page_content,
-                'current_page': page,
-                'total_pages': total_pages,
-                'has_more': page < total_pages,
-                'content_length': len(text_content)
-            })
-        
-        # 非AJAX请求 - 返回HTML页面
-        # 获取原始文本的前5000个字符作为初始内容
-        initial_content = ""
-        total_pages = 0
-        
-        # 尝试获取原始文本
-        text_content = summary.original_text
-        
-        # 如果原始文本不存在，则尝试从文件内容中提取前5000个字符
-        if not text_content:
-            print(f"初始加载 - 没有存储的原始文本，尝试从文件内容提取 - summary_id: {summary_id}")
-            # 获取二进制文件内容
-            file_content = get_file_content(summary_id)
-            if file_content:
-                try:
-                    # 为PDF处理创建临时文件
-                    if file_type == 'pdf':
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                            temp_file.write(file_content)
-                            temp_path = temp_file.name
-                        
-                        try:
-                            # 使用PyMuPDF处理前几页PDF
-                            initial_content = ""
-                            doc = fitz.open(temp_path)
-                            total_pages = len(doc)
-                            # 只处理前3页用于初始显示
-                            for page_num in range(min(3, total_pages)):
-                                initial_content += doc[page_num].get_text()
-                            doc.close()
-                            
-                            # 如果成功提取了文本，更新数据库中的原始文本
-                            if initial_content:
-                                try:
-                                    # 重新打开文档以提取完整文本
-                                    doc = fitz.open(temp_path)
-                                    full_text = ""
-                                    for page_num in range(len(doc)):
-                                        full_text += doc[page_num].get_text()
-                                    doc.close()
-                                    
-                                    print(f"更新数据库中的原始文本 - summary_id: {summary_id}")
-                                    summary.original_text = full_text
-                                    db.session.commit()
-                                    print(f"成功更新原始文本 - summary_id: {summary_id}")
-                                    
-                                    # 更新total_pages
-                                    total_pages = (len(full_text) + 5000 - 1) // 5000
-                                except Exception as e:
-                                    print(f"更新原始文本失败: {str(e)}")
-                                    db.session.rollback()
-                        finally:
-                            # 确保临时文件被删除
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                    elif file_type == 'docx':
-                        # 处理DOCX文件
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as temp_file:
-                            temp_file.write(file_content)
-                            temp_path = temp_file.name
-                        
-                        try:
-                            doc = Document(temp_path)
-                            # 获取所有段落
-                            paragraphs = [para.text for para in doc.paragraphs]
-                            # 只获取部分段落用于初始显示
-                            total_pages = (len(paragraphs) + 20 - 1) // 20  # 假设每页20个段落
-                            initial_content = "\n".join(paragraphs[:60])  # 取前60个段落
-                            
-                            # 如果成功提取了文本，更新数据库中的原始文本
-                            if paragraphs:
-                                try:
-                                    full_text = "\n".join(paragraphs)
-                                    print(f"更新数据库中的原始文本 - summary_id: {summary_id}")
-                                    summary.original_text = full_text
-                                    db.session.commit()
-                                    print(f"成功更新原始文本 - summary_id: {summary_id}")
-                                    
-                                    # 更新total_pages
-                                    total_pages = (len(full_text) + 5000 - 1) // 5000
-                                except Exception as e:
-                                    print(f"更新原始文本失败: {str(e)}")
-                                    db.session.rollback()
-                        finally:
-                            if os.path.exists(temp_path):
-                                os.remove(temp_path)
-                    else:
-                        # 对于TXT和其他文本文件
-                        try:
-                            text_content = file_content.decode('utf-8')
-                            total_pages = (len(text_content) + 5000 - 1) // 5000
-                            initial_content = text_content[:5000]
-                            
-                            # 特殊处理markdown文件，确保代码块的完整性
-                            if file_type == 'md' and '```' in initial_content:
-                                # 检查最后一个代码块是否未闭合
-                                code_blocks = initial_content.split('```')
-                                if len(code_blocks) % 2 == 0:  # 奇数表示代码块闭合，偶数表示未闭合
-                                    # 尝试找到下一个闭合标记
-                                    next_block_start = text_content.find('```', 5000)
-                                    if next_block_start != -1:
-                                        # 找到下一个闭合，扩展initial_content到这个位置后
-                                        next_block_end = text_content.find('\n', next_block_start)
-                                        if next_block_end != -1:
-                                            initial_content = text_content[:next_block_end+1]
-                            
-                            # 更新数据库中的原始文本
-                            try:
-                                print(f"更新数据库中的原始文本 - summary_id: {summary_id}")
-                                summary.original_text = text_content
-                                db.session.commit()
-                                print(f"成功更新原始文本 - summary_id: {summary_id}")
-                            except Exception as e:
-                                print(f"更新原始文本失败: {str(e)}")
-                                db.session.rollback()
-                        except UnicodeDecodeError:
-                            try:
-                                text_content = file_content.decode('latin-1')
-                                total_pages = (len(text_content) + 5000 - 1) // 5000
-                                initial_content = text_content[:5000]
-                                
-                                # 更新数据库中的原始文本
-                                try:
-                                    print(f"更新数据库中的原始文本 - summary_id: {summary_id}")
-                                    summary.original_text = text_content
-                                    db.session.commit()
-                                    print(f"成功更新原始文本 - summary_id: {summary_id}")
-                                except Exception as e:
-                                    print(f"更新原始文本失败: {str(e)}")
-                                    db.session.rollback()
-                            except Exception:
-                                initial_content = "无法解码文件内容，请下载原文查看。"
-                except Exception as e:
-                    print(f"提取初始内容出错: {str(e)}")
-                    initial_content = f"无法提取文本内容，错误: {str(e)}"
-            else:
-                initial_content = "无法获取文件内容，文件可能已损坏或不存在。"
-        else:
             # 使用存储的原始文本
             total_pages = (len(text_content) + 5000 - 1) // 5000
             initial_content = text_content[:5000]
@@ -4622,7 +4287,6 @@ class RAGTools:
         except Exception as e:
             print(f"初始化过程出现错误: {str(e)}")
             # 回退到基础Ollama嵌入模型
-            from langchain_ollama import OllamaEmbeddings
             self.embeddings = OllamaEmbeddings(
                 model="snowflake-arctic-embed2",
                 base_url="http://localhost:11434"
@@ -4639,17 +4303,12 @@ class RAGTools:
         self.persist_directory = "chroma_db"
         
     def create_vector_store(self, texts, doc_id, metadata=None):
-        """创建向量存储"""
+        """创建向量存储，用于文档检索"""
         try:
-            # 分割文本
-            if isinstance(texts, str):
-                texts = [texts]
-            
-            print(f"开始为文档ID {doc_id} 创建向量存储...")
-            print(f"输入文本数量: {len(texts)}, 类型: {type(texts[0] if texts else None)}")
-            
-            if not texts or len(texts) == 0 or not texts[0] or len(texts[0].strip()) == 0:
-                print("错误: 输入文本为空，无法创建向量存储")
+            print(f"==== 开始创建向量存储，文档ID: {doc_id} ====")
+            # 检查输入是否为空
+            if not texts or all(not text.strip() for text in texts):
+                print("错误: 输入文本为空或只包含空白字符")
                 return False
             
             # 为每个文本块添加元数据
@@ -4663,7 +4322,8 @@ class RAGTools:
                         'doc_id': doc_id,
                         'chunk_id': i,
                         'chunk_index': j,
-                        'source': 'content'
+                        'source': 'content',
+                        'type': 'original'  # 添加类型标记
                     }
                     if metadata:
                         doc_metadata.update(metadata)
@@ -4693,7 +4353,8 @@ class RAGTools:
                 print(f"成功创建/连接到Chroma集合: {collection_name}")
             except Exception as e:
                 print(f"创建/连接Chroma集合时出错: {str(e)}")
-                raise
+                traceback.print_exc()
+                return False
             
             # 添加文档
             texts = [doc['page_content'] for doc in documents]
@@ -4706,7 +4367,8 @@ class RAGTools:
                 print(f"成功添加文本到向量存储")
             except Exception as e:
                 print(f"添加文本到向量存储时出错: {str(e)}")
-                raise
+                traceback.print_exc()
+                return False
             
             # 注意：在较新版本的langchain_chroma中，Chroma对象不再需要显式调用persist()方法
             # 数据会自动持久化到指定的persist_directory目录
@@ -4735,6 +4397,7 @@ class RAGTools:
             
             # 获取向量存储
             collection_name = f"doc_{doc_id}"
+            try:
             db = Chroma(
                 persist_directory=self.persist_directory,
                 embedding_function=self.embeddings,
@@ -4751,6 +4414,10 @@ class RAGTools:
             print(f"执行向量搜索，查询：'{enhanced_query}'，文档ID：{doc_id}，初始top_k：{top_k*2}")
             docs = retriever.get_relevant_documents(enhanced_query)
             print(f"检索到 {len(docs)} 个相关文档")
+            except Exception as e:
+                print(f"获取Chroma集合或执行检索时出错: {str(e)}")
+                traceback.print_exc()
+                return []
             
             # 计算查询的嵌入向量
             query_embedding = self.embeddings.embed_query(query)
@@ -4842,6 +4509,7 @@ class RAGTools:
         try:
             # 获取向量存储
             collection_name = f"doc_{doc_id}"
+            try:
             db = Chroma(
                 persist_directory=self.persist_directory,
                 embedding_function=self.embeddings,
@@ -4853,6 +4521,10 @@ class RAGTools:
                 search_type="similarity",
                 search_kwargs={"k": 3}
             )
+            except Exception as e:
+                print(f"获取Chroma集合或创建检索器时出错: {str(e)}")
+                traceback.print_exc()
+                return None
             
             # 获取文档的目标语言
             doc = DocumentSummary.query.get(doc_id)
@@ -4904,24 +4576,20 @@ class RAGTools:
             )
             
             # 创建问答链
-            qa_chain = RetrievalQA.from_chain_type(
-                llm,
-                retriever=retriever,
-                chain_type="stuff",
-                return_source_documents=True,
-                chain_type_kwargs={"prompt": QA_CHAIN_PROMPT}
-            )
+            # 使用新版langchain API
+            stuff_documents_chain = create_stuff_documents_chain(llm, QA_CHAIN_PROMPT)
+            qa_chain = create_retrieval_chain(retriever, stuff_documents_chain)
             
             # 执行问答
-            response = qa_chain({"query": query})
+            response = qa_chain.invoke({"input": query})
             
             return {
-                'answer': response['result'],
+                'answer': response["answer"],
                 'source_documents': [
                     {
                         'content': doc.page_content,
                         'metadata': doc.metadata
-                    } for doc in response['source_documents']
+                    } for doc in response.get('context', [])
                 ]
             }
             
@@ -5293,8 +4961,7 @@ def search_redirect():
                 # 使用原始文件名作为显示名称
                 display_name = summary.original_filename or summary.display_filename or summary.file_name
                 
-                # 移除文件路径，只显示文件名
-                if display_name and ('/' in display_name or '\\' in display_name):
+                # 只显示文件名，不显示路径
                     display_name = os.path.basename(display_name)
                 
                 # 提取匹配文本摘录
@@ -5638,6 +5305,181 @@ def generate_cot_language_prompt(target_language, content_type="摘要"):
 """
     
     return cot_prompt
+
+class BM25Okapi:
+    """BM25 搜索算法实现，优化用于手语识别和神经网络相关领域"""
+    
+    def __init__(self, corpus, k1=1.5, b=0.75, epsilon=0.25):
+        """初始化BM25 Okapi搜索模型
+        
+        Args:
+            corpus: 文档集合，每个文档是分词后的列表
+            k1: 控制词频缩放的参数，通常在1.2-2.0之间
+            b: 控制文档长度归一化的参数，通常为0.75
+            epsilon: 平滑因子
+        """
+        self.corpus = corpus
+        self.k1 = k1
+        self.b = b
+        self.epsilon = epsilon
+        
+        # 领域特定术语权重
+        self.domain_weights = {
+            "手语": 2.5,
+            "识别": 2.0,
+            "残差网络": 3.0,
+            "resnet": 3.0,
+            "神经网络": 2.5,
+            "深度学习": 2.0,
+            "cnn": 2.0,
+            "卷积神经网络": 2.5
+        }
+        
+        # 初始化文档频率和IDF值
+        self._compute_idf()
+    
+    def _compute_idf(self):
+        """计算文档频率和IDF值"""
+        self.doc_count = len(self.corpus)
+        self.avg_doc_len = sum(len(doc) for doc in self.corpus) / self.doc_count
+        
+        # 文档频率统计
+        self.doc_freqs = []
+        self.term_freqs = {}
+        
+        # 统计每个文档中词项的频率
+        for doc in self.corpus:
+            doc_freq = {}
+            for term in doc:
+                if term not in doc_freq:
+                    doc_freq[term] = 0
+                doc_freq[term] += 1
+            
+            self.doc_freqs.append(doc_freq)
+            
+            # 更新全局词项频率
+            for term in doc_freq:
+                if term not in self.term_freqs:
+                    self.term_freqs[term] = 0
+                self.term_freqs[term] += 1
+        
+        # 计算IDF值
+        self.idf = {}
+        for term, freq in self.term_freqs.items():
+            self.idf[term] = math.log((self.doc_count - freq + 0.5) / (freq + 0.5) + self.epsilon)
+    
+    def get_scores(self, query):
+        """计算查询与文档集合的BM25相似度得分
+        
+        Args:
+            query: 查询词项列表
+            
+        Returns:
+            文档得分列表，与corpus中的文档顺序对应
+        """
+        # 扩展查询，增加领域特定术语
+        expanded_query = self._expand_query(query)
+        
+        # 计算文档得分
+        scores = [0.0] * self.doc_count
+        
+        for term in expanded_query:
+            # 如果词项不在语料库中，跳过
+            if term not in self.idf:
+                continue
+                
+            term_weight = self.domain_weights.get(term.lower(), 1.0)
+            
+            # 计算该词项对每个文档的贡献
+            for doc_id, doc_freq in enumerate(self.doc_freqs):
+                if term not in doc_freq:
+                    continue
+                
+                # 获取词项在当前文档中的频率
+                freq = doc_freq[term]
+                
+                # 文档长度归一化
+                doc_len = sum(doc_freq.values())
+                doc_len_ratio = doc_len / self.avg_doc_len
+                
+                # BM25公式
+                numerator = self.idf[term] * freq * (self.k1 + 1)
+                denominator = freq + self.k1 * (1 - self.b + self.b * doc_len_ratio)
+                
+                # 应用领域权重
+                scores[doc_id] += (numerator / denominator) * term_weight
+        
+        return scores
+    
+    def _expand_query(self, query):
+        """扩展查询，增加领域特定术语的相关近义词
+        
+        Args:
+            query: 原始查询词项列表
+            
+        Returns:
+            扩展后的查询词项列表
+        """
+        expanded = list(query)
+        
+        # 检查查询中是否包含手语识别相关术语
+        query_text = " ".join(query).lower()
+        
+        # 手语识别相关术语扩展
+        if "手语" in query_text:
+            expanded.append("手势语言")
+            if "识别" in query_text:
+                expanded.append("手语识别")
+                expanded.append("sign language recognition")
+        
+        # 残差网络相关术语扩展
+        if "残差" in query_text or "resnet" in query_text:
+            expanded.append("残差网络")
+            expanded.append("resnet")
+            if "识别" in query_text:
+                expanded.append("残差网络识别")
+        
+        # 神经网络相关术语扩展
+        if "神经" in query_text and "网络" in query_text:
+            expanded.append("神经网络")
+            expanded.append("neural network")
+            expanded.append("深度神经网络")
+            if "卷积" in query_text:
+                expanded.append("卷积神经网络")
+                expanded.append("cnn")
+        
+        return expanded
+
+def preprocess_search_query(query):
+    """预处理搜索查询，增强特定领域术语，提高对手语识别和神经网络等特定领域关键词的检索效果
+    
+    Args:
+        query: 原始查询字符串
+    
+    Returns:
+        增强后的查询字符串
+    """
+    if not query:
+        return query
+    
+    # 查询小写化用于匹配检查
+    query_lower = query.lower()
+    
+    # 手语识别领域特定术语
+    if "手语" in query_lower and "识别" in query_lower:
+        return f"{query} 手语识别 sign language recognition"
+    
+    if "手语" in query_lower:
+        return f"{query} 手语 sign language"
+        
+    if "神经网络" in query_lower and "手语" in query_lower:
+        return f"{query} 神经网络手语识别"
+        
+    if "残差网络" in query_lower or "resnet" in query_lower.lower():
+        return f"{query} 残差网络 ResNet"
+        
+    # 返回原始查询
+    return query
 
 if __name__ == '__main__':
     with app.app_context():

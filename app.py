@@ -37,7 +37,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.llms import Ollama
 from langchain_ollama import OllamaEmbeddings
 import pickle
-from threading import Lock
+from threading import Lock, Thread
 import tempfile
 from langchain_core.prompts import PromptTemplate
 from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
@@ -50,6 +50,15 @@ from rank_bm25 import BM25Okapi
 import math
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
+from queue import Queue
+import logging
+
+# 设置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('doc_summary')
+
+# 创建一个任务队列用于异步向量化处理
+vectorization_queue = Queue()
 
 app = Flask(__name__, static_folder='static')
 UPLOAD_FOLDER = 'uploads'
@@ -421,11 +430,16 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 existing_summary.updated_at = datetime.now()
                 db.session.commit()
                 
-                # 创建或更新混合向量存储
+                # 异步创建混合向量存储，改为后台执行
                 try:
-                    create_hybrid_vector_store(file_info["original_text"], summary_text, existing_summary.id)
+                    print(f"将文档ID {existing_summary.id} 加入向量化队列")
+                    async_create_vector_store(
+                        file_info["original_text"], 
+                        summary_text, 
+                        existing_summary.id
+                    )
                 except Exception as e:
-                    print(f"创建混合向量存储失败: {str(e)}")
+                    print(f"加入向量化队列失败: {str(e)}")
                     # 继续处理，不影响主流程
                 
                 # 更新文件名映射
@@ -477,18 +491,19 @@ def save_summary_to_db(file_info, summary_text, params, file_content=None):
                 if file_content:
                     save_file_content(new_summary, file_content)
                 
-                # 创建混合向量存储
+                # 异步创建混合向量存储，改为后台执行
                 try:
+                    print(f"将文档ID {new_summary.id} 加入向量化队列")
                     print(f"原始文本类型: {type(new_summary.original_text)}, 原始文本长度: {len(new_summary.original_text) if new_summary.original_text else 0}")
                     print(f"摘要文本类型: {type(new_summary.summary_text)}, 摘要文本长度: {len(new_summary.summary_text) if new_summary.summary_text else 0}")
-                    create_hybrid_vector_store(
+                    async_create_vector_store(
                         new_summary.original_text,
                         new_summary.summary_text,
                         new_summary.id
                     )
-                    print("向量存储创建成功")
+                    print("异步向量化任务已创建")
                 except Exception as e:
-                    print(f"创建向量存储失败: {str(e)}")
+                    print(f"加入向量化队列失败: {str(e)}")
                     # 继续处理，不要因为向量存储失败而影响整个摘要保存
                     pass
                 
@@ -2805,33 +2820,47 @@ def handle_semantic_search(doc_id):
         
         if not query:
             return jsonify({
-                'success': False, 
-                'error': '搜索查询不能为空',
-                'results': []
+                'success': False,
+                'error': '搜索查询不能为空'
             }), 400
+        
+        # 查询文档是否存在
+        doc = DocumentSummary.query.get(doc_id)
+        if not doc:
+            return jsonify({
+                'success': False,
+                'error': '文档不存在'
+            }), 404
             
-        # 获取语义搜索结果
+        # 检查文档是否已完成向量化
+        if not doc.has_vector_store:
+            return jsonify({
+                'success': False,
+                'error': '文档尚未完成向量化，请稍后再试',
+                'pending_vectorization': True
+            }), 202  # 返回202 Accepted表示请求已接受但尚未处理完成
+            
+        # 执行语义搜索
         results = semantic_search(query, doc_id)
         
-        # 确保结果中的文件名不包含路径
-        for result in results:
-            if 'text' in result:
-                result['text'] = os.path.basename(result['text'])
-            if 'content' in result:
-                result['content'] = os.path.basename(result['content'])
-                
+        if not results:
+            return jsonify({
+                'success': True,
+                'message': '未找到相关内容',
+                'results': []
+            })
+            
         return jsonify({
             'success': True,
             'results': results
         })
         
     except Exception as e:
-        print(f"语义搜索处理错误: {str(e)}")
+        print(f"语义搜索出错: {str(e)}")
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e),
-            'results': []
+            'error': f'搜索失败: {str(e)}'
         }), 500
 
 @app.route('/semantic_summary/<int:doc_id>', methods=['POST'])
@@ -2907,12 +2936,21 @@ def handle_hybrid_search(doc_id):
         
         # 获取对应的向量存储
         doc = DocumentSummary.query.get(doc_id)
-        if not doc or not doc.has_vector_store:
+        if not doc:
             return jsonify({
                 'success': False,
-                'error': '文档不存在或尚未创建向量存储',
+                'error': '文档不存在',
                 'results': []
             }), 404
+            
+        # 检查文档是否已完成向量化
+        if not doc.has_vector_store:
+            return jsonify({
+                'success': False,
+                'error': '文档尚未完成向量化，请稍后再试',
+                'pending_vectorization': True,
+                'results': []
+            }), 202  # 返回202 Accepted表示请求已接受但尚未处理完成
             
         collection_name = doc.chroma_collection or f"doc_{doc_id}"
         print(f"使用集合名称: {collection_name}")
@@ -2921,59 +2959,70 @@ def handle_hybrid_search(doc_id):
         from langchain_chroma import Chroma
         
         try:
-            # 使用Chroma获取向量存储
+            # 指定嵌入模型
+            embeddings = get_embeddings_model()
+            
+            # 确定Chroma集合路径
+            persist_directory = os.path.join(os.getcwd(), "chroma_db")
+            
+            # 加载向量存储
             vector_store = Chroma(
                 collection_name=collection_name,
-                embedding_function=rag_tools.embeddings,
-                persist_directory=rag_tools.persist_directory
+                embedding_function=embeddings,
+                persist_directory=persist_directory
             )
             
-            print(f"成功获取向量存储: {collection_name}")
+            print(f"成功加载向量存储 {collection_name}")
             
             # 执行混合语义搜索
             results = hybrid_semantic_search(
-                query=query, 
-                vector_store=vector_store,
-                content_weight=content_weight, 
+                query, 
+                vector_store, 
+                content_weight=content_weight,
                 summary_weight=summary_weight,
                 max_results=max_results,
                 sliding_window=sliding_window
             )
             
-            # 格式化结果
-            formatted_results = []
-            for result in results:
-                # 确保结果显示的内容不包含路径
-                content = result.get('content', '')
-                
-                formatted_results.append({
-                    'text': content,
-                    'content': content,
-                    'score': float(result.get('score', 0)),
-                    'source': result.get('source', '未知'),
-                    'metadata': result.get('metadata', {})
+            if not results:
+                return jsonify({
+                    'success': True,
+                    'message': '未找到相关内容',
+                    'results': []
                 })
-            
+                
+            # 处理结果
+            response_results = []
+            for i, doc in enumerate(results):
+                response_results.append({
+                    'text': doc.page_content,
+                    'metadata': doc.metadata,
+                    'score': doc.score if hasattr(doc, 'score') else None,
+                    'content_score': doc.content_score if hasattr(doc, 'content_score') else None,
+                    'summary_score': doc.summary_score if hasattr(doc, 'summary_score') else None,
+                })
+                
             return jsonify({
                 'success': True,
-                'results': formatted_results
+                'results': response_results
             })
+            
         except Exception as e:
-            print(f"获取或查询向量存储时出错: {str(e)}")
+            print(f"执行混合语义搜索时出错: {str(e)}")
             traceback.print_exc()
             return jsonify({
                 'success': False,
-                'error': f'向量存储查询失败: {str(e)}',
+                'error': f'搜索失败: {str(e)}',
                 'results': []
             }), 500
-        
+            
     except Exception as e:
-        print(f"混合搜索处理错误: {str(e)}")
+        print(f"混合语义搜索请求处理出错: {str(e)}")
         traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e),
-            'results': []  # 确保即使出错也返回空结果数组
+            'error': f'搜索失败: {str(e)}',
+            'results': []
         }), 500
 
 @app.route('/hybrid_summary/<int:doc_id>', methods=['POST'])
@@ -5596,6 +5645,94 @@ def preview_document(summary_id):
         print(f"预览文件错误: {str(e)}")
         traceback.print_exc()
         return render_template('error.html', message=f"预览文件时出错: {str(e)}"), 500
+
+@app.route('/api/check_vectorization/<int:doc_id>', methods=['GET'])
+@login_required
+def check_vectorization_status(doc_id):
+    """检查文档向量化状态"""
+    try:
+        # 获取当前用户ID
+        user_id = session.get('user_id')
+        
+        # 查询文档是否存在并且属于当前用户
+        doc = DocumentSummary.query.filter_by(id=doc_id, user_id=user_id).first()
+        if not doc:
+            return jsonify({
+                'success': False,
+                'error': '文档不存在或无权访问'
+            }), 404
+            
+        # 检查向量化状态
+        return jsonify({
+            'success': True,
+            'doc_id': doc_id,
+            'has_vector_store': doc.has_vector_store,
+            'vectorization_complete': doc.has_vector_store,
+            'vectorization_pending': not doc.has_vector_store,
+            'chroma_collection': doc.chroma_collection
+        })
+        
+    except Exception as e:
+        logger.error(f"检查文档 {doc_id} 向量化状态时出错: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'检查向量化状态失败: {str(e)}'
+        }), 500
+
+def process_vectorization_queue():
+    """后台线程函数，处理向量化任务队列"""
+    logger.info("向量化任务处理线程启动")
+    while True:
+        try:
+            # 从队列获取任务
+            task = vectorization_queue.get()
+            if task is None:  # 检查是否是终止信号
+                break
+                
+            doc_id = task.get('doc_id')
+            text = task.get('text')
+            summary = task.get('summary')
+            
+            logger.info(f"开始处理文档ID {doc_id} 的向量化任务")
+            
+            try:
+                # 执行向量化处理
+                success = create_hybrid_vector_store(text, summary, doc_id)
+                logger.info(f"文档ID {doc_id} 的向量化处理{'成功' if success else '失败'}")
+                
+                # 更新数据库中的向量化状态
+                if success:
+                    try:
+                        doc = DocumentSummary.query.get(doc_id)
+                        if doc:
+                            doc.has_vector_store = True
+                            doc.chroma_collection = f"doc_{doc_id}"
+                            db.session.commit()
+                            logger.info(f"已更新文档ID {doc_id} 的向量存储状态")
+                    except Exception as e:
+                        logger.error(f"更新文档ID {doc_id} 向量存储状态失败: {str(e)}")
+            except Exception as e:
+                logger.error(f"处理文档ID {doc_id} 的向量化任务时出错: {str(e)}")
+                traceback.print_exc()
+            finally:
+                # 标记任务完成
+                vectorization_queue.task_done()
+        except Exception as e:
+            logger.error(f"向量化任务处理线程出错: {str(e)}")
+            traceback.print_exc()
+
+# 启动向量化处理线程
+vectorization_thread = Thread(target=process_vectorization_queue, daemon=True)
+vectorization_thread.start()
+
+def async_create_vector_store(text, summary, doc_id):
+    """异步创建向量存储，将任务添加到队列"""
+    logger.info(f"添加文档ID {doc_id} 到向量化队列")
+    vectorization_queue.put({
+        'doc_id': doc_id,
+        'text': text,
+        'summary': summary
+    })
 
 if __name__ == '__main__':
     with app.app_context():

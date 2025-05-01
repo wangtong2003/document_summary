@@ -228,6 +228,17 @@ class Summary(db.Model):
     model = db.Column(db.String(100), nullable=True)  # 使用的模型
     target_language = db.Column(db.String(20), nullable=True)  # 目标语言
     target_length = db.Column(db.String(20), nullable=True)  # 摘要长度
+    
+    # 新增更实用的输出结构和格式相关字段
+    output_structure = db.Column(db.String(20), nullable=True)  # 摘要结构：bullet, outline, paragraph, table, qa
+    depth_level = db.Column(db.String(20), nullable=True)  # 层次深度：single, multi, section
+    tone = db.Column(db.String(20), nullable=True)  # 语气：formal, conversational, technical, simple
+    content_focus = db.Column(db.String(20), nullable=True)  # 内容关注点：topic, chronological, problem_solution, comparative
+    citation_style = db.Column(db.String(20), nullable=True)  # 引用格式：none, apa, mla, chicago, harvard
+    export_format = db.Column(db.String(20), nullable=True)  # 导出格式：markdown, text, html, docx
+    visual_elements = db.Column(db.String(20), nullable=True)  # 是否包含可视元素：none, tables, bullets, numbering
+    
+    # 保留原有字段
     focus_areas = db.Column(db.String(255), nullable=True)  # 关注领域
     level = db.Column(db.String(20), nullable=True)  # 专业程度
     language_style = db.Column(db.String(20), nullable=True)  # 语言风格
@@ -1650,7 +1661,6 @@ def get_summaries():
         print(f"获取摘要列表错误: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
 @app.route('/summaries/<int:summary_id>', methods=['GET'])
 @login_required
 def get_summary_detail(summary_id):
@@ -5353,7 +5363,6 @@ def generate_cot_language_prompt(target_language, content_type="摘要"):
 """
     
     return cot_prompt
-
 class BM25Okapi:
     """BM25 搜索算法实现，优化用于手语识别和神经网络相关领域"""
     
@@ -5744,3 +5753,5 @@ if __name__ == '__main__':
         print("数据库和应用组件初始化完成")
     # 修改端口为5001或8080等非常用端口，并明确指定主机地址
     app.run(debug=True, host='127.0.0.1', port=8080)
+
+

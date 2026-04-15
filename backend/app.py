@@ -1,5 +1,6 @@
 """
 智能问数系统 - FastAPI 后端主应用
+集成 MCP、缓存、连接池和监控
 """
 
 import asyncio
@@ -8,15 +9,16 @@ import logging
 import time
 from typing import Optional, Dict, Any
 from datetime import datetime
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import os
 
-from langgraph_agent.graph import build_agent_graph, run_agent
-from backend.mcp_client import mcp_client
+from langgraph_agent.runner import init_agent, run_agent, shutdown_agent
+from backend.cache_manager import get_cache_manager
 from config.settings import settings
 
 # 配置日志
@@ -25,28 +27,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("smart-analytics")
-
-app = FastAPI(
-    title="智能问数系统 API",
-    description="基于 LangGraph + MCP + vLLM 的智能数据分析与可视化系统",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
-
-# CORS 配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS.split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 挂载前端静态文件
-frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
-if os.path.exists(frontend_path):
-    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
 
 # 请求/响应模型
 from pydantic import BaseModel, Field
@@ -70,141 +50,116 @@ class QueryResponse(BaseModel):
     data_summary: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     execution_time: Optional[float] = None
+    from_cache: Optional[bool] = False
 
 class HealthResponse(BaseModel):
     status: str
     service: str
     timestamp: str
     version: str
+    mcp_connected: bool = False
+    cache_enabled: bool = False
 
-# HTML 前端模板 (简化版本，生产环境应使用独立前端项目)
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智能问数系统</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { color: white; margin-bottom: 30px; text-align: center; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
-        .input-section { background: white; padding: 30px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
-        textarea { width: 100%; height: 120px; padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 15px; resize: vertical; transition: border-color 0.3s; }
-        textarea:focus { outline: none; border-color: #667eea; }
-        button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 12px 40px; border-radius: 8px; cursor: pointer; font-size: 16px; margin-top: 15px; transition: transform 0.2s, box-shadow 0.2s; }
-        button:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
-        button:disabled { background: #ccc; cursor: not-allowed; transform: none; box-shadow: none; }
-        .result-section { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); display: none; }
-        .response-text { margin-bottom: 25px; line-height: 1.8; color: #333; font-size: 15px; }
-        .chart-container { margin-top: 25px; border-radius: 8px; overflow: hidden; }
-        .loading { text-align: center; padding: 50px; display: none; background: white; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
-        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .error { color: #dc3545; padding: 15px; background: #f8d7da; border-radius: 8px; margin-top: 15px; border-left: 4px solid #dc3545; }
-        .sql-display { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-top: 15px; font-family: 'Courier New', monospace; font-size: 13px; overflow-x: auto; border-left: 4px solid #667eea; }
-        .section-title { color: #667eea; margin-bottom: 15px; font-size: 18px; font-weight: 600; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>📊 智能问数系统</h1>
-        <div class="input-section">
-            <textarea id="queryInput" placeholder="请输入您的问题，例如：&#10;- 统计每个用户的文档数量&#10;- 显示最近创建的 10 个文档&#10;- 分析文档摘要的分布情况"></textarea>
-            <button onclick="submitQuery()" id="submitBtn">提交查询</button>
-        </div>
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p style="margin-top: 20px; color: #666; font-size: 16px;">正在处理您的查询，请稍候...</p>
-        </div>
-        <div class="result-section" id="resultSection">
-            <div class="section-title">📝 分析结果</div>
-            <div class="response-text" id="responseText"></div>
-            
-            <div id="sqlSection" style="display:none;">
-                <div class="section-title">💾 SQL 查询</div>
-                <div class="sql-display" id="sqlQuery"></div>
-            </div>
-            
-            <div class="section-title" style="margin-top: 25px;">📈 可视化图表</div>
-            <div class="chart-container" id="chartContainer">
-                <p style="color: #999; text-align: center; padding: 40px;">暂无图表数据</p>
-            </div>
-        </div>
-    </div>
-    <script>
-        async function submitQuery() {
-            const query = document.getElementById('queryInput').value.trim();
-            if (!query) { alert('请输入查询内容'); return; }
-            
-            const btn = document.getElementById('submitBtn');
-            const loading = document.getElementById('loading');
-            const resultSection = document.getElementById('resultSection');
-            const sqlSection = document.getElementById('sqlSection');
-            
-            btn.disabled = true;
-            loading.style.display = 'block';
-            resultSection.style.display = 'none';
-            
-            const startTime = Date.now();
-            
-            try {
-                const response = await fetch('/api/query', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query })
-                });
-                
-                const data = await response.json();
-                const endTime = Date.now();
-                const executionTime = ((endTime - startTime) / 1000).toFixed(2);
-                
-                if (data.success) {
-                    let responseHtml = data.response.replace(/\\n/g, '<br>');
-                    if (data.execution_time) {
-                        responseHtml += `<br><br><small style="color:#999;">⏱️ 执行时间：${data.execution_time}秒</small>`;
-                    }
-                    
-                    document.getElementById('responseText').innerHTML = responseHtml;
-                    
-                    if (data.sql_query) {
-                        document.getElementById('sqlQuery').textContent = data.sql_query;
-                        sqlSection.style.display = 'block';
-                    } else {
-                        sqlSection.style.display = 'none';
-                    }
-                    
-                    if (data.chart_html) {
-                        document.getElementById('chartContainer').innerHTML = data.chart_html;
-                    } else if (data.chart_config) {
-                        Plotly.newPlot('chartContainer', data.chart_config.data, data.chart_config.layout);
-                    } else {
-                        document.getElementById('chartContainer').innerHTML = '<p style="color: #999; text-align: center; padding: 40px;">本次查询未生成图表</p>';
-                    }
-                    
-                    resultSection.style.display = 'block';
-                } else {
-                    alert('查询失败：' + data.error);
-                }
-            } catch (error) {
-                alert('请求失败：' + error.message);
-            } finally {
-                btn.disabled = false;
-                loading.style.display = 'none';
-            }
+class MetricsResponse(BaseModel):
+    cache_stats: Optional[Dict[str, Any]] = None
+    uptime_seconds: float = 0.0
+
+
+# 全局启动时间
+start_time = datetime.now()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时初始化
+    logger.info("启动智能问数系统...")
+    logger.info(f"vLLM 服务地址：{settings.VLLM_BASE_URL}")
+    logger.info(f"数据库：{settings.DB_NAME}@{settings.DB_HOST}:{settings.DB_PORT}")
+    
+    # 初始化 Agent（包含 MCP 客户端）
+    agent_initialized = await init_agent()
+    if not agent_initialized:
+        logger.error("Agent 初始化失败，但将继续运行")
+    
+    yield
+    
+    # 关闭时清理资源
+    logger.info("关闭智能问数系统...")
+    await shutdown_agent()
+
+
+app = FastAPI(
+    title="智能问数系统 API",
+    description="基于 LangGraph + MCP + vLLM 的智能数据分析与可视化系统",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan
+)
+
+# CORS 配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS.split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 挂载前端静态文件
+frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+if os.path.exists(frontend_path):
+    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
+
+
+# P1: 错误分类和处理
+class SmartAnalyticsError(Exception):
+    """自定义异常基类"""
+    pass
+
+class MCPConnectionError(SmartAnalyticsError):
+    """MCP 连接错误"""
+    pass
+
+class DatabaseQueryError(SmartAnalyticsError):
+    """数据库查询错误"""
+    pass
+
+class LLMTimeoutError(SmartAnalyticsError):
+    """LLM 超时错误"""
+    pass
+
+
+@app.exception_handler(SmartAnalyticsError)
+async def smart_error_handler(request: Request, exc: SmartAnalyticsError):
+    """统一错误处理"""
+    error_type = type(exc).__name__
+    logger.error(f"{error_type}: {str(exc)}")
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": str(exc),
+            "error_type": error_type
         }
-        
-        document.getElementById('queryInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter' && e.ctrlKey) {
-                submitQuery();
-            }
-        });
-    </script>
-</body>
-</html>
-"""
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """通用异常处理"""
+    logger.error(f"未处理的异常：{exc}", exc_info=True)
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": "服务器内部错误",
+            "error_type": "InternalError"
+        }
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -225,7 +180,7 @@ async def handle_query(req: QueryRequest):
     try:
         logger.info(f"收到查询：{req.query}")
         
-        # 运行 LangGraph Agent
+        # 运行 Agent
         result = await run_agent(req.query)
         
         execution_time = time.time() - start_time
@@ -244,14 +199,19 @@ async def handle_query(req: QueryRequest):
             )
         
         return QueryResponse(
-            success=True,
+            success=result.get('success', False),
             response=final_response,
             chart_html=chart_html,
             chart_config=chart_config,
             sql_query=result.get('generated_sql', ''),
             data_summary=result.get('data_summary', {}),
-            execution_time=execution_time
+            execution_time=execution_time,
+            from_cache=result.get('from_cache', False)
         )
+    
+    except asyncio.TimeoutError as e:
+        logger.error(f"查询超时：{e}")
+        raise LLMTimeoutError("查询处理超时，请稍后重试")
     
     except Exception as e:
         logger.error(f"处理查询失败：{e}", exc_info=True)
@@ -266,6 +226,7 @@ async def handle_query(req: QueryRequest):
 async def list_tables():
     """列出所有数据库表"""
     try:
+        from backend.mcp_client import mcp_client
         result = await mcp_client.list_tables()
         return result
     except Exception as e:
@@ -277,6 +238,7 @@ async def list_tables():
 async def get_table_schema(table_name: str):
     """获取表结构"""
     try:
+        from backend.mcp_client import mcp_client
         result = await mcp_client.get_table_schema(table_name)
         return result
     except Exception as e:
@@ -285,14 +247,44 @@ async def get_table_schema(table_name: str):
 
 
 @app.get("/api/health", response_model=HealthResponse)
-def health_check():
+async def health_check():
     """健康检查"""
+    from backend.mcp_client import mcp_client
+    
     return HealthResponse(
         status="healthy",
         service="smart-analytics",
         timestamp=datetime.now().isoformat(),
-        version="1.0.0"
+        version="2.0.0",
+        mcp_connected=mcp_client._initialized,
+        cache_enabled=get_cache_manager()._initialized
     )
+
+
+@app.get("/api/metrics", response_model=MetricsResponse)
+async def get_metrics():
+    """获取系统指标 (P2: 监控指标)"""
+    cache = get_cache_manager()
+    cache_stats = await cache.get_stats()
+    
+    uptime = (datetime.now() - start_time).total_seconds()
+    
+    return MetricsResponse(
+        cache_stats=cache_stats,
+        uptime_seconds=uptime
+    )
+
+
+@app.post("/api/cache/clear")
+async def clear_cache():
+    """清空缓存"""
+    try:
+        cache = get_cache_manager()
+        success = await cache.clear_all()
+        return {"success": success, "message": "缓存已清空" if success else "清空失败"}
+    except Exception as e:
+        logger.error(f"清空缓存失败：{e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == '__main__':

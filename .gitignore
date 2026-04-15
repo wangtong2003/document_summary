@@ -1,10 +1,33 @@
 ```
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
+env/
+venv/
+.venv/
+.ENV
+.venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
+# Distribution / packaging
+.Python
+_build/
+buck-out/
 build/
 develop-eggs/
 dist/
@@ -20,38 +43,32 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# Database
-chroma_db/
-
-# Sessions
-flask_session/
-
-# IDE
+# IDEs
+.vscode/
 .idea/
+*.swp
+*.swo
+*.tmp
 
 # Environment
 .env
 .env.local
+.env.
 *.env
+*.env.*
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Logs
 *.log
 
 # Coverage
-.coverage
 htmlcov/
+.coverage
 .coverage.*
-
-# Static files (if they're generated)
-static/css/
-static/js/
-
-# Evaluation results
-evaluation_results/
-
-# Migrations cache
-migrations/__pycache__/
-migrations/versions/__pycache__/
-
+.pytest_cache/
 ```

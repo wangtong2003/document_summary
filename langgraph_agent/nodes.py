@@ -1,5 +1,6 @@
 """
 LangGraph 智能问数 Agent 节点实现
+集成真实 MCP 客户端调用
 """
 
 import json
@@ -8,6 +9,7 @@ from typing import Dict, Any, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from .state import AgentState
+from backend.mcp_client import mcp_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("langgraph-nodes")
@@ -25,6 +27,7 @@ SQL_GENERATION_PROMPT = """你是一个专业的数据分析师和 SQL 专家。
 4. 包含必要的聚合函数 (COUNT, SUM, AVG 等)
 5. 添加 ORDER BY 和 LIMIT 限制结果数量
 6. 输出纯 SQL 语句，不要包含解释
+7. 如果表名或列名包含特殊字符，使用反引号包裹
 
 用户问题：{user_query}
 
@@ -59,6 +62,7 @@ CHART_SELECTION_PROMPT = """你是一个数据可视化专家。根据以下数�
     "best_choice": "最佳图表类型"
 }}"""
 
+
 class AgentNodes:
     """LangGraph Agent 节点集合"""
     
@@ -77,16 +81,38 @@ class AgentNodes:
         return state
     
     async def get_db_schema(self, state: AgentState) -> AgentState:
-        """获取数据库表结构"""
+        """获取数据库表结构（通过 MCP 协议）"""
         logger.info("获取数据库表结构")
         
-        # 实际应用中通过 MCP 调用获取
-        # 这里模拟返回
-        state['db_schema'] = {
-            "tables": ["documents", "users", "summaries"],
-            "schema_info": "可通过 MCP 工具获取详细结构"
-        }
-        state['current_step'] = 'sql_generation'
+        try:
+            # 通过 MCP 客户端获取所有表
+            tables_result = await mcp_client.list_tables()
+            
+            if not tables_result.get('success'):
+                logger.warning(f"获取表列表失败：{tables_result.get('error')}")
+                state['db_schema'] = {"tables": [], "schema_info": "无法获取表结构"}
+                state['current_step'] = 'sql_generation'
+                return state
+            
+            tables = tables_result.get('tables', [])
+            
+            # 获取每个表的详细结构
+            schema_details = {}
+            for table in tables:
+                schema_result = await mcp_client.get_table_schema(table)
+                if schema_result.get('success'):
+                    schema_details[table] = schema_result.get('schema', [])
+            
+            state['db_schema'] = {
+                "tables": tables,
+                "schema_info": schema_details
+            }
+            state['current_step'] = 'sql_generation'
+            
+        except Exception as e:
+            logger.error(f"获取数据库结构失败：{e}")
+            state['db_schema'] = {"tables": [], "schema_info": f"获取失败：{str(e)}"}
+            state['current_step'] = 'sql_generation'
         
         return state
     
@@ -94,8 +120,17 @@ class AgentNodes:
         """生成 SQL 查询语句"""
         logger.info("生成 SQL 查询")
         
+        # 格式化 schema 信息
+        db_schema = state.get('db_schema', {})
+        schema_text = ""
+        for table_name, columns in db_schema.get('schema_info', {}).items():
+            schema_text += f"表名：{table_name}\n"
+            for col in columns:
+                schema_text += f"  - {col.get('Field', 'N/A')}: {col.get('Type', 'N/A')} ({col.get('Key', '')})\n"
+            schema_text += "\n"
+        
         prompt = SQL_GENERATION_PROMPT.format(
-            db_schema=json.dumps(state.get('db_schema', {}), ensure_ascii=False),
+            db_schema=schema_text or "无表结构信息",
             user_query=state['user_query']
         )
         
@@ -151,17 +186,23 @@ class AgentNodes:
         return state
     
     async def execute_query(self, state: AgentState) -> AgentState:
-        """执行数据库查询"""
+        """执行数据库查询（通过 MCP 协议）"""
         logger.info("执行数据库查询")
         
-        # 实际应用中通过 MCP 调用数据库
-        # 这里模拟返回
         try:
-            # TODO: 通过 MCP 客户端调用数据库工具
-            state['query_result'] = [
-                {"id": 1, "name": "示例数据", "count": 100}
-            ]
-            state['current_step'] = 'data_analysis'
+            # 通过 MCP 客户端执行 SQL 查询
+            sql_query = state.get('generated_sql', '')
+            result = await mcp_client.execute_sql_query(sql_query, limit=100)
+            
+            if result.get('success'):
+                state['query_result'] = result.get('data', [])
+                state['query_row_count'] = result.get('row_count', 0)
+                state['current_step'] = 'data_analysis'
+            else:
+                state['query_error'] = result.get('error', '查询失败')
+                state['needs_correction'] = True
+                state['current_step'] = 'error_handling'
+                
         except Exception as e:
             logger.error(f"查询执行失败：{e}")
             state['query_error'] = str(e)
@@ -232,27 +273,48 @@ class AgentNodes:
         return state
     
     async def create_chart(self, state: AgentState) -> AgentState:
-        """创建可视化图表"""
+        """创建可视化图表（通过 MCP 协议）"""
         logger.info(f"创建图表：{state['selected_chart_type']}")
         
-        # 实际应用中通过 MCP 调用可视化工具
-        # 这里模拟返回
         try:
-            # TODO: 通过 MCP 客户端调用可视化工具
-            chart_html = "<div>图表 HTML 将通过 MCP 工具生成</div>"
-            state['chart_html'] = chart_html
+            # 通过 MCP 客户端调用可视化工具
+            query_result = state.get('query_result', [])
+            chart_type = state.get('selected_chart_type', 'bar')
+            data_summary = state.get('data_summary', {})
+            columns = data_summary.get('columns', [])
             
-            state['chart_config'] = {
-                "type": state['selected_chart_type'],
-                "data_columns": state.get('data_summary', {}).get('columns', []),
-                "title": f"{state['user_query']} - 可视化"
-            }
+            # 自动推断 X/Y 轴
+            x_column = columns[0] if len(columns) > 0 else None
+            y_column = columns[1] if len(columns) > 1 else columns[0]
+            
+            result = await mcp_client.create_chart(
+                chart_type=chart_type,
+                data=query_result,
+                x_column=x_column,
+                y_column=y_column,
+                title=f"{state['user_query']} - 可视化",
+                width=800,
+                height=600
+            )
+            
+            if result.get('success'):
+                state['chart_html'] = result.get('chart_html', None)
+                state['chart_config'] = {
+                    "type": chart_type,
+                    "data_columns": columns,
+                    "title": f"{state['user_query']} - 可视化"
+                }
+            else:
+                logger.warning(f"图表创建失败：{result.get('error')}")
+                state['chart_html'] = None
+                state['chart_config'] = None
             
             state['current_step'] = 'generate_response'
             
         except Exception as e:
             logger.error(f"图表创建失败：{e}")
             state['chart_html'] = None
+            state['chart_config'] = None
             state['current_step'] = 'generate_response'
         
         return state

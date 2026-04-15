@@ -1,0 +1,43 @@
+# 智能问数项目依赖
+
+## 核心框架
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-core>=0.3.0
+
+## MCP (Model Context Protocol)
+mcp>=1.0.0
+
+## vLLM (LLM 推理服务)
+# vLLM 通过 Docker 部署，不需要直接安装
+
+## 数据库
+pymysql>=1.1.0
+sqlalchemy>=2.0.0
+
+## 可视化
+plotly>=5.20.0
+pandas>=2.0.0
+
+## Web 框架 - FastAPI (替代 Flask)
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+## 工具库
+pydantic>=2.6.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+
+## 异步支持
+aiohttp>=3.9.0
+asyncio>=3.4.3
+
+## 日志和监控
+loguru>=0.7.0
+
+## 开发工具
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.26.0  # 用于测试 FastAPI

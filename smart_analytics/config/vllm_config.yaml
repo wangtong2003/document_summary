@@ -1,0 +1,31 @@
+# vLLM 服务配置
+model:
+  name: "Qwen/Qwen2.5-Coder-32B-Instruct"  # 推荐用于 SQL 生成和代码任务
+  # 或者使用以下模型:
+  # - "Qwen/Qwen2.5-72B-Instruct"  # 更强推理能力
+  # - "deepseek-ai/DeepSeek-Coder-V2-Instruct"  # 优秀代码能力
+  # - "meta-llama/Llama-3.1-70B-Instruct"  # 通用能力强
+  
+server:
+  host: "0.0.0.0"
+  port: 8000
+  tensor_parallel_size: 1  # GPU 数量，多卡可增大
+  
+performance:
+  max_model_len: 8192      # 最大上下文长度
+  gpu_memory_utilization: 0.9
+  max_num_seqs: 256
+  enable_chunked_prefill: true
+  num_scheduler_steps: 1
+  
+guided_decoding:
+  enabled: true            # 启用引导解码，确保输出合法 SQL/JSON
+  backend: "outlines"      # 或 "lmql", "grammar"
+  
+api:
+  api_key: "vllm_api_key"  # API 密钥
+  timeout: 120             # 请求超时时间 (秒)
+  
+logging:
+  level: "INFO"
+  file: "/var/log/vllm/server.log"

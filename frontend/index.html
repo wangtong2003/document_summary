@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能问数系统 - 现代化数据可视化平台</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <h1>📊 智能问数</h1>
+                <p>AI 驱动的数据分析</p>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-page="query">
+                    <span class="icon">🔍</span>
+                    <span>数据查询</span>
+                </a>
+                <a href="#" class="nav-item" data-page="history">
+                    <span class="icon">📜</span>
+                    <span>查询历史</span>
+                </a>
+                <a href="#" class="nav-item" data-page="tables">
+                    <span class="icon">🗃️</span>
+                    <span>数据表</span>
+                </a>
+                <a href="#" class="nav-item" data-page="settings">
+                    <span class="icon">⚙️</span>
+                    <span>设置</span>
+                </a>
+            </nav>
+            
+            <div class="system-status">
+                <div class="status-item">
+                    <span class="status-dot healthy"></span>
+                    <span>系统正常</span>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 顶部导航栏 -->
+            <header class="top-bar">
+                <div class="breadcrumb">
+                    <span>首页</span>
+                    <span class="separator">/</span>
+                    <span class="current">数据查询</span>
+                </div>
+                <div class="user-info">
+                    <span class="username">访客用户</span>
+                </div>
+            </header>
+            
+            <!-- 查询页面 -->
+            <section class="page query-page active" id="queryPage">
+                <div class="page-header">
+                    <h2>智能数据查询</h2>
+                    <p class="subtitle">使用自然语言提问，AI 自动分析并生成可视化图表</p>
+                </div>
+                
+                <div class="query-section">
+                    <div class="input-card">
+                        <label for="queryInput">请输入您的问题</label>
+                        <textarea 
+                            id="queryInput" 
+                            placeholder="例如：&#10;- 统计每个用户的文档数量，并按降序排列&#10;- 显示最近创建的 10 个文档及其摘要&#10;- 分析文档类型分布情况"
+                            rows="5"
+                        ></textarea>
+                        <div class="input-actions">
+                            <button class="btn btn-primary" id="submitBtn" onclick="submitQuery()">
+                                <span class="btn-icon">🚀</span>
+                                <span>开始分析</span>
+                            </button>
+                            <button class="btn btn-secondary" onclick="clearQuery()">
+                                <span class="btn-icon">🗑️</span>
+                                <span>清空</span>
+                            </button>
+                        </div>
+                        <div class="quick-questions">
+                            <span class="qq-label">快速提问：</span>
+                            <button class="qq-btn" onclick="setQuickQuestion('统计每个用户的文档数量')">用户文档统计</button>
+                            <button class="qq-btn" onclick="setQuickQuestion('显示最近创建的 10 个文档')">最新文档</button>
+                            <button class="qq-btn" onclick="setQuickQuestion('分析文档类型分布')">类型分布</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 加载状态 -->
+                <div class="loading-section" id="loadingSection" style="display: none;">
+                    <div class="loading-animation">
+                        <div class="pulse-ring"></div>
+                        <div class="pulse-ring"></div>
+                        <div class="pulse-ring"></div>
+                        <div class="loading-icon">🤖</div>
+                    </div>
+                    <p class="loading-text">AI 正在分析您的数据...</p>
+                    <p class="loading-subtext">正在生成 SQL → 查询数据库 → 分析结果 → 绘制图表</p>
+                </div>
+                
+                <!-- 结果展示 -->
+                <div class="results-section" id="resultsSection" style="display: none;">
+                    <div class="result-grid">
+                        <!-- 文字结果 -->
+                        <div class="result-card text-result">
+                            <div class="card-header">
+                                <h3>📝 分析结果</h3>
+                            </div>
+                            <div class="card-body" id="responseText"></div>
+                        </div>
+                        
+                        <!-- SQL 查询 -->
+                        <div class="result-card sql-result" id="sqlCard" style="display: none;">
+                            <div class="card-header">
+                                <h3>💾 SQL 查询</h3>
+                                <button class="btn-copy" onclick="copySQL()" title="复制 SQL">📋</button>
+                            </div>
+                            <div class="card-body">
+                                <pre id="sqlQuery"></pre>
+                            </div>
+                        </div>
+                        
+                        <!-- 数据摘要 -->
+                        <div class="result-card summary-result" id="summaryCard" style="display: none;">
+                            <div class="card-header">
+                                <h3>📊 数据摘要</h3>
+                            </div>
+                            <div class="card-body" id="dataSummary"></div>
+                        </div>
+                        
+                        <!-- 可视化图表 -->
+                        <div class="result-card chart-result full-width">
+                            <div class="card-header">
+                                <h3>📈 可视化图表</h3>
+                                <div class="chart-actions">
+                                    <button class="btn-action" onclick="downloadChart()" title="下载图表">⬇️</button>
+                                    <button class="btn-action" onclick="fullscreenChart()" title="全屏查看">⛶</button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="chartContainer" class="chart-wrapper"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 执行时间 -->
+                    <div class="execution-info">
+                        <span>⏱️ 执行时间：<strong id="execTime">0.00</strong> 秒</span>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- 其他页面占位 -->
+            <section class="page" id="historyPage">
+                <div class="page-header">
+                    <h2>查询历史</h2>
+                    <p class="subtitle">查看您的历史查询记录</p>
+                </div>
+                <div class="empty-state">
+                    <div class="empty-icon">📜</div>
+                    <p>暂无历史记录</p>
+                </div>
+            </section>
+            
+            <section class="page" id="tablesPage">
+                <div class="page-header">
+                    <h2>数据表管理</h2>
+                    <p class="subtitle">查看数据库表结构信息</p>
+                </div>
+                <div class="empty-state">
+                    <div class="empty-icon">🗃️</div>
+                    <p>功能开发中...</p>
+                </div>
+            </section>
+            
+            <section class="page" id="settingsPage">
+                <div class="page-header">
+                    <h2>系统设置</h2>
+                    <p class="subtitle">配置系统参数</p>
+                </div>
+                <div class="empty-state">
+                    <div class="empty-icon">⚙️</div>
+                    <p>功能开发中...</p>
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

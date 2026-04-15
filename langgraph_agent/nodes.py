@@ -81,7 +81,7 @@ class AgentNodes:
         return state
     
     async def get_db_schema(self, state: AgentState) -> AgentState:
-        """获取数据库表结构（通过 MCP 协议）"""
+        """获取数据库表结构（通过 MCP 协议）- 并行化 + Schema 缓存优化"""
         logger.info("获取数据库表结构")
         
         try:
@@ -96,12 +96,45 @@ class AgentNodes:
             
             tables = tables_result.get('tables', [])
             
-            # 获取每个表的详细结构
+            # 从 Schema 缓存获取 (优化点：长时间缓存表结构)
+            from backend.cache_manager import get_schema_cache
+            schema_cache = get_schema_cache()
+            
+            # 并行获取每个表的详细结构，优先从缓存读取
+            async def get_schema_with_cache(table_name: str):
+                # 先尝试缓存
+                cached = await schema_cache.get_schema(table_name)
+                if cached:
+                    logger.debug(f"Schema 缓存命中：{table_name}")
+                    return {"success": True, "schema": cached, "from_cache": True}
+                
+                # 缓存未命中，从 MCP 获取
+                result = await mcp_client.get_table_schema(table_name)
+                if result.get('success'):
+                    # 写入缓存 (2 小时 TTL)
+                    await schema_cache.set_schema(table_name, result.get('schema', []))
+                    logger.debug(f"Schema 已缓存：{table_name}")
+                return result
+            
+            # 并行执行所有表的 schema 获取
+            schema_tasks = [get_schema_with_cache(table) for table in tables]
+            schema_results = await asyncio.gather(*schema_tasks, return_exceptions=True)
+            
+            # 处理结果
             schema_details = {}
-            for table in tables:
-                schema_result = await mcp_client.get_table_schema(table)
-                if schema_result.get('success'):
-                    schema_details[table] = schema_result.get('schema', [])
+            cache_hits = 0
+            for table, result in zip(tables, schema_results):
+                if isinstance(result, Exception):
+                    logger.error(f"获取表 {table} 结构失败：{result}")
+                    continue
+                if result.get('success'):
+                    schema_details[table] = result.get('schema', [])
+                    if result.get('from_cache'):
+                        cache_hits += 1
+                else:
+                    logger.warning(f"获取表 {table} 结构失败：{result.get('error')}")
+            
+            logger.info(f"Schema 获取完成：{len(tables)}个表，缓存命中 {cache_hits} 个")
             
             state['db_schema'] = {
                 "tables": tables,

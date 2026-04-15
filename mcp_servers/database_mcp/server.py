@@ -1,6 +1,7 @@
 """
-数据库 MCP 服务器
+数据库 MCP 服务器 - 带连接池优化
 提供安全的只读数据库查询接口
+使用 DBUtils.PooledDB 管理数据库连接池
 """
 
 import asyncio
@@ -12,6 +13,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 import pymysql
 from pymysql.cursors import DictCursor
+from dbutils.pooledb import PoolDB
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("database-mcp")
@@ -26,6 +28,22 @@ DB_CONFIG = {
     'charset': 'utf8mb4',
     'cursorclass': DictCursor
 }
+
+# 连接池配置
+POOL_CONFIG = {
+    'creator': pymysql,
+    'maxconnections': 10,  # 最大连接数
+    'mincached': 2,        # 初始化时创建的空闲连接数
+    'maxcached': 5,        # 空闲连接最大数量
+    'blocking': True,      # 连接池满时是否阻塞
+    'maxusage': 100,       # 单个连接最大复用次数
+    'idlecheck': 300,      # 空闲连接检测间隔 (秒)
+    'reset': True,         # 连接归还时重置
+    'setsession': []       # 会话初始化命令
+}
+
+# 创建全局连接池
+db_pool = PoolDB(**POOL_CONFIG, **DB_CONFIG)
 
 app = Server("database-mcp")
 
@@ -112,8 +130,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             if 'LIMIT' not in query.upper():
                 query = f"{query.rstrip(';')} LIMIT {limit}"
             
-            # 执行查询
-            connection = pymysql.connect(**DB_CONFIG)
+            # 从连接池获取连接
+            connection = db_pool.connection()
             with connection.cursor() as cursor:
                 cursor.execute(query)
                 results = cursor.fetchall()
@@ -137,7 +155,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                     text=json.dumps({"error": "表名不能为空", "success": False})
                 )]
             
-            connection = pymysql.connect(**DB_CONFIG)
+            # 从连接池获取连接
+            connection = db_pool.connection()
             with connection.cursor() as cursor:
                 cursor.execute(f"DESCRIBE `{table_name}`")
                 schema = cursor.fetchall()
@@ -152,7 +171,8 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 )]
         
         elif name == "list_tables":
-            connection = pymysql.connect(**DB_CONFIG)
+            # 从连接池获取连接
+            connection = db_pool.connection()
             with connection.cursor() as cursor:
                 cursor.execute("SHOW TABLES")
                 tables = [row[f'Tables_in_{DB_CONFIG["database"]}'] for row in cursor.fetchall()]
@@ -182,7 +202,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         )]
     finally:
         if connection:
-            connection.close()
+            connection.close()  # 归还连接到连接池
 
 async def main():
     """启动 MCP 服务器"""

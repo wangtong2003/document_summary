@@ -264,8 +264,13 @@ async def health_check():
 @app.get("/api/metrics", response_model=MetricsResponse)
 async def get_metrics():
     """获取系统指标 (P2: 监控指标)"""
+    from backend.metrics import get_metrics_collector
+    
     cache = get_cache_manager()
     cache_stats = await cache.get_stats()
+    
+    # 获取 Prometheus 指标
+    metrics = await get_metrics_collector().get_metrics()
     
     uptime = (datetime.now() - start_time).total_seconds()
     
@@ -273,6 +278,16 @@ async def get_metrics():
         cache_stats=cache_stats,
         uptime_seconds=uptime
     )
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus 格式的监控指标"""
+    from backend.metrics import get_metrics_collector
+    from fastapi.responses import PlainTextResponse
+    
+    collector = get_metrics_collector()
+    return PlainTextResponse(collector.to_prometheus_format())
 
 
 @app.post("/api/cache/clear")
@@ -294,10 +309,18 @@ if __name__ == '__main__':
     logger.info(f"vLLM 服务地址：{settings.VLLM_BASE_URL}")
     logger.info(f"数据库：{settings.DB_NAME}@{settings.DB_HOST}:{settings.DB_PORT}")
     
-    # 启动 FastAPI 应用
+    # 启动 FastAPI 应用 - 生产环境优化配置
     uvicorn.run(
         app,
         host=settings.FLASK_HOST,
         port=settings.FLASK_PORT,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
+        workers=4,              # 多进程工作模式
+        loop="uvloop",          # 高性能事件循环
+        http="httptools",       # 高性能 HTTP 解析
+        ws="websockets",        # WebSocket 支持
+        timeout_keep_alive=30,  # 保持连接超时时间
+        limit_concurrency=100,  # 最大并发连接数
+        backlog=2048,           # 监听队列大小
+        access_log=True         # 启用访问日志
     )
